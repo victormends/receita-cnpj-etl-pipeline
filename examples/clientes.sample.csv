@@ -1,0 +1,5 @@
+ID;Nome;Razao Social;Cidade;Estado;CNPJ
+1;Cliente Exemplo MEI;Empresa Exemplo MEI LTDA;Curitiba;PR;01234567000189
+2;Cliente Exemplo Simples;Empresa Exemplo Simples LTDA;Joinville;SC;11222333000181
+3;Cliente Exemplo Normal;Empresa Exemplo Normal LTDA;Florianopolis;SC;99888777000166
+4;Cliente Sem CNPJ;Empresa Sem CNPJ;Maringa;PR;
