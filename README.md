@@ -13,6 +13,7 @@ The project downloads public CNPJ datasets, prepares the raw files for import, l
 - Loads staged data into PostgreSQL using server-side `COPY`.
 - Applies configurable filters for state, municipality, opening date, CNAE, and Simples Nacional status.
 - Exports the filtered establishments to CSV.
+- Classifies existing client lists from `.xlsx` or `.csv` as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using Receita's Simples dataset.
 - Includes tests for pipeline safety checks and script behavior.
 
 ## Pipeline Architecture
@@ -107,6 +108,62 @@ If `config.ps1` is missing, the pipeline exits with instructions to copy `config
 
 The pipeline can skip stages when validated downstream artifacts already exist. Cleanup behavior is controlled by `cleanupMode` and `cleanupDryRun` in `config.ps1`.
 
+## Existing Client Classification
+
+Use `scripts/classify-clientes.ps1` when you already have a client export and only need to classify tax-regime status from Receita's Simples dataset.
+
+Supported client inputs:
+
+- `.xlsx`
+- `.csv`
+
+The client file must contain a `CNPJ` column by default. The script preserves the original columns and appends:
+
+- `cnpj_normalizado`
+- `cnpj_basico`
+- `regime_tributario`
+- `classificacao_fonte`
+- `classificacao_observacao`
+
+For official multi-GB Receita `SIMPLES.CSV` files, use the default PostgreSQL mode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\classify-clientes.ps1 `
+  -InputPath .\clientes.xlsx `
+  -SimplesPath "C:\Receita\F.K03200W.SIMPLES.CSV" `
+  -OutputPath .\output\clientes_classificados.csv
+```
+
+`-Mode Database` is the default. It uses the same PostgreSQL discovery, preflight checks, and server-side `COPY` pattern as the main ETL pipeline. This is the intended mode for large Receita files.
+
+For samples, tests, or tiny Simples files, use file mode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\classify-clientes.ps1 `
+  -InputPath .\examples\clientes.sample.csv `
+  -SimplesPath .\examples\simples.sample.csv `
+  -OutputPath .\output\clientes_classificados.csv `
+  -Mode File
+```
+
+Classification rules:
+
+- `MEI`: `opcao_pelo_mei = S`
+- `Simples Nacional`: not MEI and `opcao_pelo_simples = S`
+- `Normal`: no MEI or Simples option found in the informed Simples file
+
+`Normal` does not mean Lucro Real or Lucro Presumido. It only means the CNPJ was not marked as MEI or Simples Nacional in the Receita Simples snapshot used.
+
+See `docs/client-classifier.md` for detailed usage, PostgreSQL requirements, packaging, and troubleshooting.
+
+To build the optional interactive Windows launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\packaging\build-classifier-exe.ps1
+```
+
+Executable builds are not committed to this repository. Publish or distribute the generated launcher as a release ZIP together with `classify-clientes.ps1`, `config.example.ps1`, and `lib\preflight.ps1`.
+
 ## Running Tests
 
 Tests do not require a committed `config.ps1` and do not run the full ETL.
@@ -126,6 +183,7 @@ Do not commit:
 - `config.ps1`
 - `.env` files
 - Generated CSV exports
+- Client `.xlsx` or `.csv` exports
 - Raw Receita Federal ZIP archives or extracted files
 - PostgreSQL dumps or backups
 - Certificates, private keys, PFX/P12 files, or PEM files
@@ -136,6 +194,7 @@ See `SECURITY.md` for the public release policy.
 ## What Is Not Included
 
 - No generated CSV output
+- No client spreadsheets or private client exports
 - No raw Receita Federal data archives
 - No extracted or cleaned working files
 - No database dumps

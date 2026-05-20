@@ -106,6 +106,47 @@ function New-ZipFile {
     }
 }
 
+function New-TestXlsxFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[][]]$Rows
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("cnpj-etl-xlsx-{0}" -f ([guid]::NewGuid().ToString('N')))
+    New-Item -ItemType Directory -Path (Join-Path $staging '_rels') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $staging 'xl\_rels') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $staging 'xl\worksheets') -Force | Out-Null
+
+    try {
+        [System.IO.File]::WriteAllText((Join-Path $staging '[Content_Types].xml'), '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>', [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText((Join-Path $staging '_rels\.rels'), '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>', [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText((Join-Path $staging 'xl\workbook.xml'), '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>', [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText((Join-Path $staging 'xl\_rels\workbook.xml.rels'), '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>', [System.Text.Encoding]::UTF8)
+
+        $rowXml = New-Object System.Collections.ArrayList
+        for ($r = 0; $r -lt $Rows.Count; $r++) {
+            $cells = New-Object System.Collections.ArrayList
+            for ($c = 0; $c -lt $Rows[$r].Count; $c++) {
+                $col = [char]([int][char]'A' + $c)
+                $ref = "{0}{1}" -f $col, ($r + 1)
+                $value = [System.Security.SecurityElement]::Escape($Rows[$r][$c])
+                [void]$cells.Add("<c r=`"$ref`" t=`"inlineStr`"><is><t>$value</t></is></c>")
+            }
+            [void]$rowXml.Add("<row r=`"$($r + 1)`">$($cells -join '')</row>")
+        }
+
+        $sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + ($rowXml -join '') + '</sheetData></worksheet>'
+        [System.IO.File]::WriteAllText((Join-Path $staging 'xl\worksheets\sheet1.xml'), $sheet, [System.Text.Encoding]::UTF8)
+
+        if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $Path)
+    }
+    finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-ScriptText {
     param([string]$RelativePath)
     return [System.IO.File]::ReadAllText((Join-Path $ProjectRoot $RelativePath))
@@ -256,6 +297,82 @@ try {
         if ($cleanupBody -match "Filter '\*\.zip'" -or $cleanupBody -match "Filter 'LIMPO_\*'" -or $cleanupBody -match "Filter '\*\.ESTABELE'") {
             throw 'run-pipeline.ps1 final cleanup must not broadly delete ZIP, raw, or LIMPO data files.'
         }
+    }
+
+    Invoke-Test 'client classifier exposes CSV and Simples parameters' {
+        $text = Get-ScriptText 'scripts\classify-clientes.ps1'
+        Assert-MatchText $text '\$InputPath' 'classifier must accept an input CSV path.'
+        Assert-MatchText $text '\$OutputPath' 'classifier must accept an output CSV path.'
+        Assert-MatchText $text '\$SimplesPath' 'classifier must accept a Simples CSV path.'
+        Assert-MatchText $text '\$CnpjColumn' 'classifier must allow the CNPJ column name to be configured.'
+        Assert-MatchText $text "\[ValidateSet\('Database', 'File'\)\]" 'classifier must expose database and file modes.'
+        Assert-MatchText $text 'Invoke-CnpjPreflight' 'classifier database mode must reuse PostgreSQL preflight.'
+        Assert-MatchText $text 'Copy-FileForServerCopy' 'classifier database mode must stage local Simples files for server-side COPY.'
+        Assert-MatchText $text 'COPY tmp_simples_classificador' 'classifier database mode must use PostgreSQL COPY for large Simples files.'
+        Assert-MatchText $text 'opcao_pelo_mei' 'classifier output notes must reference the MEI source flag.'
+        Assert-MatchText $text 'Simples Nacional' 'classifier must classify Simples Nacional rows.'
+        Assert-MatchText $text 'Import-XlsxRows' 'classifier must support XLSX input files.'
+    }
+
+    Invoke-Test 'client classifier packaging script builds dedicated executable' {
+        $text = Get-ScriptText 'scripts\packaging\build-classifier-exe.ps1'
+        Assert-MatchText $text 'classify-clientes-launcher\.ps1' 'classifier packaging must use the interactive launcher.'
+        Assert-MatchText $text 'CnpjClientClassifier\.exe' 'classifier packaging must create the dedicated executable.'
+        Assert-MatchText $text 'classify-clientes\.ps1' 'classifier packaging must copy the classifier script beside the executable.'
+        Assert-MatchText $text 'config\.example\.ps1' 'classifier packaging must copy the public config template for PostgreSQL mode.'
+        Assert-MatchText $text 'preflight\.ps1' 'classifier packaging must copy PostgreSQL preflight helpers.'
+    }
+
+    Invoke-Test 'client classifier sample run classifies synthetic rows' {
+        $root = New-TestRoot; $tempRoots += $root
+        $outputPath = Join-Path $root 'clientes_classificados.csv'
+        $scriptPath = Join-Path $ProjectRoot 'scripts\classify-clientes.ps1'
+        $inputPath = Join-Path $ProjectRoot 'examples\clientes.sample.csv'
+        $simplesPath = Join-Path $ProjectRoot 'examples\simples.sample.csv'
+
+        & $scriptPath -InputPath $inputPath -SimplesPath $simplesPath -OutputPath $outputPath -Delimiter ';' -Mode File | Out-Null
+
+        Assert-True (Test-Path -LiteralPath $outputPath) 'classifier should create the output CSV.'
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+        Assert-Equal 4 $rows.Count 'classifier should preserve all sample client rows.'
+        Assert-Equal 'MEI' $rows[0].regime_tributario 'first sample row should be MEI.'
+        Assert-Equal 'Simples Nacional' $rows[1].regime_tributario 'second sample row should be Simples Nacional.'
+        Assert-Equal 'Normal' $rows[2].regime_tributario 'third sample row should be Normal.'
+        Assert-Equal 'Sem CNPJ' $rows[3].regime_tributario 'fourth sample row should be marked as missing CNPJ.'
+    }
+
+    Invoke-Test 'client classifier reads XLSX client export' {
+        $root = New-TestRoot; $tempRoots += $root
+        $xlsxPath = Join-Path $root 'clientes.xlsx'
+        $outputPath = Join-Path $root 'clientes_classificados.csv'
+        $scriptPath = Join-Path $ProjectRoot 'scripts\classify-clientes.ps1'
+        $simplesPath = Join-Path $ProjectRoot 'examples\simples.sample.csv'
+        New-TestXlsxFile -Path $xlsxPath -Rows @(
+            @('ID', 'Nome', 'Razao Social', 'Cidade', 'Estado', 'CNPJ'),
+            @('1', 'Cliente Exemplo MEI', 'Empresa Exemplo MEI LTDA', 'Curitiba', 'PR', '01234567000189'),
+            @('2', 'Cliente Exemplo Simples', 'Empresa Exemplo Simples LTDA', 'Joinville', 'SC', '11222333000181')
+        )
+
+        & $scriptPath -InputPath $xlsxPath -SimplesPath $simplesPath -OutputPath $outputPath -Delimiter ';' -Mode File | Out-Null
+
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+        Assert-Equal 2 $rows.Count 'classifier should read XLSX client rows.'
+        Assert-Equal 'MEI' $rows[0].regime_tributario 'first XLSX row should be MEI.'
+        Assert-Equal 'Simples Nacional' $rows[1].regime_tributario 'second XLSX row should be Simples Nacional.'
+    }
+
+    Invoke-Test 'client classifier docs and ignore rules protect private data' {
+        $gitignore = Get-ScriptText '.gitignore'
+        $docs = Get-ScriptText 'docs\client-classifier.md'
+        Assert-MatchText $gitignore '\*\.xlsx' '.gitignore must ignore Excel workbooks.'
+        Assert-MatchText $gitignore '\*\.xls' '.gitignore must ignore Excel workbooks.'
+        Assert-MatchText $gitignore 'output/' '.gitignore must ignore generated outputs.'
+        Assert-MatchText $gitignore 'downloads/' '.gitignore must ignore downloaded Receita files.'
+        Assert-MatchText $gitignore '!examples/\*\.sample\.csv' '.gitignore must allow synthetic sample CSV files.'
+        Assert-MatchText $docs '\.xlsx` or `\.csv' 'client classifier docs must explain XLSX and CSV support.'
+        Assert-MatchText $docs '-Mode Database' 'client classifier docs must explain PostgreSQL mode for large Simples files.'
+        Assert-MatchText $docs '`Normal` does not mean Lucro Real' 'docs must explain the Normal limitation.'
+        Assert-MatchText $docs 'Do not infer MEI from `natureza_juridica = 2135`' 'docs must reject natureza_juridica as the MEI source.'
     }
 }
 finally {

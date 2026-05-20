@@ -14,11 +14,16 @@ build/
 *.MUNICCSV
 LIMPO_*
 *.csv
+!examples/
+!examples/*.sample.csv
+*.xlsx
+*.xls
 
 output/
 temp/
 downloads/
 data/
+clientes_classificados*.csv
 
 *.log
 *.tmp
