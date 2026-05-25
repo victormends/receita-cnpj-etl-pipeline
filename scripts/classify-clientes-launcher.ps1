@@ -3,6 +3,7 @@ param(
     [string]$InputPath,
     [string]$SimplesPath,
     [string]$OutputPath,
+    [string]$EnrichmentPath,
     [string]$Delimiter = ';',
     [ValidateSet('Database', 'File')]
     [string]$Mode = 'Database'
@@ -21,15 +22,6 @@ function Wait-BeforeExit {
     [void][Console]::ReadLine()
 }
 
-function Read-ConsoleValue {
-    param([Parameter(Mandatory = $true)][string]$Prompt)
-
-    Write-Host -NoNewline "$Prompt`: "
-    $value = [Console]::ReadLine()
-    if ($null -eq $value) { return '' }
-    return $value
-}
-
 function Select-OpenFile {
     param([string]$Title)
 
@@ -40,27 +32,21 @@ function Select-OpenFile {
     $dialog.CheckFileExists = $true
     $dialog.Multiselect = $false
 
-    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
-        return ''
-    }
-
+    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return '' }
     return $dialog.FileName
 }
 
 function Select-SaveFile {
-    param([string]$Title)
+    param([string]$Title, [string]$DefaultFileName = 'clientes_classificados.csv')
 
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.SaveFileDialog
     $dialog.Title = $Title
     $dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
-    $dialog.FileName = 'clientes_classificados.csv'
+    $dialog.FileName = $DefaultFileName
     $dialog.OverwritePrompt = $true
 
-    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
-        return ''
-    }
-
+    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return '' }
     return $dialog.FileName
 }
 
@@ -74,14 +60,8 @@ function Read-Delimiter {
 }
 
 function Get-LauncherDirectory {
-    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
-        return $PSScriptRoot
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
-        return (Split-Path -Parent $PSCommandPath)
-    }
-
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $PSScriptRoot }
+    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) { return (Split-Path -Parent $PSCommandPath) }
     if ($MyInvocation.MyCommand.PSObject.Properties.Name -contains 'Path' -and -not [string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
         return (Split-Path -Parent $MyInvocation.MyCommand.Path)
     }
@@ -106,48 +86,38 @@ try {
 
     $scriptDir = Get-LauncherDirectory
     $classifier = Join-Path $scriptDir 'classify-clientes.ps1'
+    $stagingBuilder = Join-Path $scriptDir 'build-client-staging.ps1'
 
     if (-not (Test-Path -LiteralPath $classifier -PathType Leaf)) {
         throw "Classifier script was not found beside the launcher: $classifier"
     }
 
     Write-Host '===================================================' -ForegroundColor Cyan
-    Write-Host ' CLIENT CLASSIFIER - Receita Simples' -ForegroundColor Cyan
+    Write-Host ' CLIENT STAGING BUILDER' -ForegroundColor Cyan
     Write-Host '===================================================' -ForegroundColor Cyan
-    Write-Host 'Provide the client XLSX/CSV and Receita Simples CSV files.' -ForegroundColor Yellow
-    Write-Host 'Large Receita Simples files use PostgreSQL mode by default.' -ForegroundColor Yellow
-    Write-Host 'Press Enter on output to use .\output\clientes_classificados.csv.' -ForegroundColor Yellow
+    Write-Host 'Provide the client XLSX/CSV. A cleaned operational enrichment CSV is used automatically when present.' -ForegroundColor Yellow
+    Write-Host 'Receita Simples CSV is optional; cancel its dialog to skip regime classification.' -ForegroundColor Yellow
     Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
-    if ([string]::IsNullOrWhiteSpace($InputPath)) {
-        $InputPath = Select-OpenFile 'Select the client XLSX or CSV file'
-    }
+    if ([string]::IsNullOrWhiteSpace($InputPath)) { $InputPath = Select-OpenFile 'Select the client XLSX or CSV file' }
+    if ([string]::IsNullOrWhiteSpace($SimplesPath)) { $SimplesPath = Select-OpenFile 'Select the Receita Simples CSV file, or cancel to skip regime classification' }
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Select-SaveFile 'Choose the PostgreSQL staging output CSV file' 'clientes_postgres_staging.csv' }
+    if ([string]::IsNullOrWhiteSpace($Delimiter)) { $Delimiter = Read-Delimiter ';' }
 
-    if ([string]::IsNullOrWhiteSpace($SimplesPath)) {
-        $SimplesPath = Select-OpenFile 'Select the Receita Simples CSV file'
-    }
+    if ([string]::IsNullOrWhiteSpace($InputPath)) { throw 'Client CSV path is required.' }
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) { throw 'Output CSV path is required.' }
 
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-        $OutputPath = Select-SaveFile 'Choose the output CSV file'
+    if (Test-Path -LiteralPath $stagingBuilder -PathType Leaf) {
+        $builderArgs = @{ InputPath = $InputPath; OutputPath = $OutputPath; Delimiter = $Delimiter; Mode = $Mode }
+        if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $builderArgs.SimplesPath = $SimplesPath }
+        if (-not [string]::IsNullOrWhiteSpace($EnrichmentPath)) { $builderArgs.EnrichmentPath = $EnrichmentPath }
+        & $stagingBuilder @builderArgs
     }
-
-    if ([string]::IsNullOrWhiteSpace($Delimiter)) {
-        $Delimiter = Read-Delimiter ';'
+    else {
+        $classifierArgs = @{ InputPath = $InputPath; OutputPath = $OutputPath; Delimiter = $Delimiter; Mode = $Mode }
+        if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $classifierArgs.SimplesPath = $SimplesPath }
+        & $classifier @classifierArgs
     }
-
-    if ([string]::IsNullOrWhiteSpace($InputPath)) {
-        throw 'Client CSV path is required.'
-    }
-
-    if ([string]::IsNullOrWhiteSpace($SimplesPath)) {
-        throw 'Receita Simples CSV path is required.'
-    }
-
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-        throw 'Output CSV path is required.'
-    }
-
-    & $classifier -InputPath $InputPath -SimplesPath $SimplesPath -OutputPath $OutputPath -Delimiter $Delimiter -Mode $Mode
 }
 catch {
     Write-Host ''
@@ -155,7 +125,5 @@ catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
 }
 finally {
-    if (-not $launchedWithArguments) {
-        Wait-BeforeExit
-    }
+    if (-not $launchedWithArguments) { Wait-BeforeExit }
 }

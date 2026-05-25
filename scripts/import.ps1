@@ -402,7 +402,7 @@ WHERE LEFT(c.cnpj, 8) = e.cnpj_basico;
 "@
 Run-Sql $sqlApplyEmpresas "Apply legal names to CRM rows"
 
-Write-Host "`n[6/7] Applying Simples and exclusion rules..." -ForegroundColor Yellow
+Write-Host "`n[6/8] Applying Simples and exclusion rules..." -ForegroundColor Yellow
 if ($simples) {
     $sqlCopySimples = @"
 TRUNCATE tmp_simples_stage;
@@ -456,8 +456,112 @@ AND e.natureza_juridica = '2135';
 "@
 Run-Sql $sqlDeleteExcluded "Remove excluded MEI legal nature rows"
 
-# --- STEP 7: LOG AND VERIFY ---
-Write-Host "`n[7/7] Logging and verifying import..." -ForegroundColor Yellow
+# --- STEP 7: APPLY CNAE CATEGORY RULES ---
+Write-Host "`n[7/8] Applying CNAE category rules..." -ForegroundColor Yellow
+
+$sqlCategories = @"
+INSERT INTO cnae_categoria_map (categoria, match_type, cnae_inicio, cnae_fim, prioridade, observacao)
+VALUES
+('agro_produtor_rural', 'range', '01', '03', 10, 'Agricultura, pecuaria, pesca e atividades relacionadas'),
+('industria', 'range', '10', '33', 50, 'Industria geral'),
+('construtora', 'range', '41', '43', 15, 'Construcao civil'),
+('transporte', 'range', '49', '53', 10, 'Transporte, armazenagem e correio'),
+('telecom', 'range', '61', '61', 10, 'Telecomunicacoes'),
+('ti_software', 'range', '62', '63', 10, 'TI, software e servicos de informacao'),
+('financeiro', 'range', '64', '66', 10, 'Financeiras, seguros e servicos auxiliares'),
+('saude_clinica', 'range', '86', '86', 10, 'Atividades de saude humana'),
+('gas_combustivel', 'exact', '4731800', '', 5, 'Comercio varejista de combustiveis para veiculos'),
+('gas_combustivel', 'exact', '4784900', '', 5, 'Comercio varejista de gas liquefeito de petroleo'),
+('gas_combustivel', 'exact', '3520401', '', 5, 'Producao de gas; processamento de gas natural'),
+('farmacia', 'exact', '4771701', '', 5, 'Farmacia sem manipulacao'),
+('farmacia', 'exact', '4771702', '', 5, 'Farmacia com manipulacao'),
+('farmacia', 'exact', '4771703', '', 5, 'Farmacia homeopatica'),
+('imobiliario', 'exact', '6810201', '', 5, 'Compra e venda de imoveis proprios'),
+('imobiliario', 'exact', '6810202', '', 5, 'Aluguel de imoveis proprios'),
+('imobiliario', 'exact', '6821801', '', 5, 'Corretagem de imoveis'),
+('frigorifico', 'exact', '1011201', '', 5, 'Frigorifico - abate de bovinos'),
+('frigorifico', 'exact', '1011202', '', 5, 'Frigorifico - abate de equinos'),
+('frigorifico', 'exact', '1012101', '', 5, 'Abate de aves'),
+('grafica', 'prefix', '181', '', 10, 'Impressao e servicos graficos'),
+('cooperativa', 'prefix', '94', '', 80, 'Atividades associativas; revisar natureza juridica para cooperativas')
+ON CONFLICT (categoria, match_type, cnae_inicio, cnae_fim) DO UPDATE SET
+    prioridade = EXCLUDED.prioridade,
+    ativo = TRUE,
+    observacao = EXCLUDED.observacao;
+
+TRUNCATE TABLE estabelecimentos_categorias;
+
+WITH cnaes AS (
+    SELECT cnpj, regexp_replace(cnae_fiscal_principal, '\D', '', 'g') AS cnae, 'principal' AS origem
+    FROM estabelecimentos_crm
+    WHERE COALESCE(cnae_fiscal_principal, '') <> ''
+    UNION ALL
+    SELECT e.cnpj, regexp_replace(value, '\D', '', 'g') AS cnae, 'secundaria' AS origem
+    FROM estabelecimentos_crm e
+    CROSS JOIN LATERAL regexp_split_to_table(COALESCE(e.cnae_fiscal_secundaria, ''), '[^0-9]+') AS value
+    WHERE value <> ''
+), matches AS (
+    SELECT DISTINCT ON (c.cnpj, m.categoria, c.cnae, c.origem)
+        c.cnpj,
+        m.categoria,
+        c.cnae AS cnae_match,
+        c.origem AS cnae_origem,
+        m.match_type,
+        CASE WHEN c.origem = 'principal' THEN m.prioridade ELSE m.prioridade + 20 END AS prioridade
+    FROM cnaes c
+    JOIN cnae_categoria_map m ON m.ativo
+    WHERE c.cnae <> ''
+    AND (
+        (m.match_type = 'exact' AND c.cnae = m.cnae_inicio)
+        OR (m.match_type = 'prefix' AND c.cnae LIKE m.cnae_inicio || '%')
+        OR (m.match_type = 'range' AND LEFT(c.cnae, 2) BETWEEN m.cnae_inicio AND NULLIF(m.cnae_fim, ''))
+    )
+    ORDER BY c.cnpj, m.categoria, c.cnae, c.origem, prioridade
+), government_matches AS (
+    SELECT
+        c.cnpj,
+        'cooperativa' AS categoria,
+        e.natureza_juridica AS cnae_match,
+        'governo' AS cnae_origem,
+        'exact' AS match_type,
+        5 AS prioridade
+    FROM estabelecimentos_crm c
+    JOIN empresas_dados e ON e.cnpj_basico = LEFT(c.cnpj, 8)
+    WHERE e.natureza_juridica = '2143'
+), all_matches AS (
+    SELECT * FROM matches
+    UNION ALL
+    SELECT * FROM government_matches
+), principal AS (
+    SELECT cnpj, categoria, cnae_match, cnae_origem,
+        ROW_NUMBER() OVER (
+            PARTITION BY cnpj
+            ORDER BY prioridade, CASE WHEN cnae_origem = 'principal' THEN 0 ELSE 1 END, categoria
+        ) AS rn
+    FROM all_matches
+)
+INSERT INTO estabelecimentos_categorias (
+    cnpj, categoria, categoria_principal, cnae_match, cnae_origem, match_type, prioridade, classificacao_fonte
+)
+SELECT
+    m.cnpj,
+    m.categoria,
+    p.rn = 1 AS categoria_principal,
+    m.cnae_match,
+    m.cnae_origem,
+    m.match_type,
+    m.prioridade,
+    'Receita CNAE'
+FROM all_matches m
+JOIN principal p ON p.cnpj = m.cnpj
+    AND p.categoria = m.categoria
+    AND p.cnae_match = m.cnae_match
+    AND p.cnae_origem = m.cnae_origem;
+"@
+Run-Sql $sqlCategories "Seed CNAE category rules and generate category matches"
+
+# --- STEP 8: LOG AND VERIFY ---
+Write-Host "`n[8/8] Logging and verifying import..." -ForegroundColor Yellow
 
 $sqlLog = @"
 INSERT INTO import_log (fase, arquivo, linhas_importadas)

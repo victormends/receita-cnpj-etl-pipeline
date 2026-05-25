@@ -10,7 +10,6 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
-    [Parameter(Mandatory = $true)]
     [string]$SimplesPath,
 
     [string]$Delimiter = ';',
@@ -565,7 +564,9 @@ function Import-SimplesMatchesFromFile {
 }
 
 $InputPath = Resolve-RequiredFile -Path $InputPath -Label 'Input file'
-$SimplesPath = Resolve-RequiredFile -Path $SimplesPath -Label 'Simples CSV'
+if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) {
+    $SimplesPath = Resolve-RequiredFile -Path $SimplesPath -Label 'Simples CSV'
+}
 
 if ($Delimiter.Length -ne 1) {
     throw 'Delimiter must be a single character.'
@@ -580,7 +581,7 @@ Write-Host '===================================================' -ForegroundColo
 Write-Host ' CLIENT CLASSIFIER - Receita Simples' -ForegroundColor Cyan
 Write-Host '===================================================' -ForegroundColor Cyan
 Write-Host " Input:   $InputPath" -ForegroundColor Yellow
-Write-Host " Simples: $SimplesPath" -ForegroundColor Yellow
+Write-Host " Simples: $(if ($SimplesPath) { $SimplesPath } else { 'not provided; regime fields will stay unclassified' })" -ForegroundColor Yellow
 Write-Host " Output:  $OutputPath" -ForegroundColor Yellow
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
@@ -627,7 +628,7 @@ Write-Host "Client rows: $($preparedClientes.Count)" -ForegroundColor Gray
 Write-Host "Target CNPJ basicos: $($targetBasicos.Count)" -ForegroundColor Gray
 
 $simplesMatches = @{}
-if ($targetBasicos.Count -gt 0) {
+if ($targetBasicos.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($SimplesPath)) {
     if ($Mode -eq 'Database') {
         $simplesMatches = Import-SimplesMatchesWithPostgres -PreparedClientes $preparedClientes -SimplesPath $SimplesPath -DelimiterChar $Delimiter[0]
     }
@@ -647,9 +648,9 @@ $results = New-Object System.Collections.ArrayList
 $counts = @{}
 
 foreach ($prepared in $preparedClientes) {
-    $regime = 'Normal'
-    $fonte = 'Receita Simples'
-    $observacao = 'Sem opcao por MEI ou Simples Nacional no arquivo informado.'
+    $regime = ''
+    $fonte = 'Nao classificado'
+    $observacao = 'Receita Simples CSV nao informado.'
 
     if ($prepared.Status) {
         $regime = $prepared.Status
@@ -659,7 +660,13 @@ foreach ($prepared in $preparedClientes) {
     elseif ($simplesMatches.ContainsKey($prepared.RowId)) {
         $match = $simplesMatches[$prepared.RowId]
         $regime = $match.Regime
+        $fonte = 'Receita Simples'
         $observacao = "opcao_pelo_simples=$($match.OpcaoPeloSimples); opcao_pelo_mei=$($match.OpcaoPeloMei)"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($SimplesPath)) {
+        $regime = 'Normal'
+        $fonte = 'Receita Simples'
+        $observacao = 'Sem opcao por MEI ou Simples Nacional no arquivo informado.'
     }
 
     if (-not $counts.ContainsKey($regime)) { $counts[$regime] = 0 }

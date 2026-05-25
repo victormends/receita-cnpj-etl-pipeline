@@ -12,8 +12,10 @@ The project downloads public CNPJ datasets, prepares the raw files for import, l
 - Cleans null bytes and malformed raw text before import.
 - Loads staged data into PostgreSQL using server-side `COPY`.
 - Applies configurable filters for state, municipality, opening date, CNAE, and Simples Nacional status.
+- Generates government-data business category matches from CNAE/legal nature for filtered establishments.
 - Exports the filtered establishments to CSV.
 - Classifies existing client lists from `.xlsx` or `.csv` as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using Receita's Simples dataset.
+- Builds PostgreSQL-ready existing-client staging CSVs by combining a base client file, optional cleaned operational enrichment, optional Simples data, and optional government CNAE categories.
 - Includes tests for pipeline safety checks and script behavior.
 
 ## Pipeline Architecture
@@ -154,7 +156,30 @@ Classification rules:
 
 `Normal` does not mean Lucro Real or Lucro Presumido. It only means the CNPJ was not marked as MEI or Simples Nacional in the Receita Simples snapshot used.
 
+If `-SimplesPath` is omitted, the script still writes the output and leaves valid CNPJ rows as `Nao classificado`.
+
 See `docs/client-classifier.md` for detailed usage, PostgreSQL requirements, packaging, and troubleshooting.
+
+## Existing Client Staging CSV
+
+Use `scripts/build-client-staging.ps1` when you need a PostgreSQL-friendly CSV that keeps the base client spreadsheet as the row source and adds cleaned operational fields.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-client-staging.ps1 `
+  -InputPath .\data\clientes.xlsx `
+  -EnrichmentPath .\data\operational-enrichment.csv `
+  -SimplesPath .\data\F.K03200$W.SIMPLES.CSV `
+  -OutputPath .\output\clientes_postgres_staging.csv `
+  -IncludeGovernmentData
+```
+
+`-EnrichmentPath` and `-SimplesPath` are optional. If enrichment is omitted, the script looks for `data\operational-enrichment.csv` beside the executable/project and then in Downloads. This repository does not include that CSV.
+
+The staging builder normalizes IDs by removing non-digits and trimming leading zeroes, so `1.003`, `1003`, and `0001003` join as the same ID. The base input CNPJ is authoritative; enrichment `cnpj_corrigido` is only a fallback/audit source.
+
+Create PostgreSQL staging tables with `sql/client_staging.sql`, then import the generated CSV with client-side `\copy`.
+
+See `docs/client-staging.md` for the generated columns, review CSV, summary JSON, and government category details.
 
 To build the optional interactive Windows launcher:
 
@@ -162,7 +187,7 @@ To build the optional interactive Windows launcher:
 powershell -ExecutionPolicy Bypass -File .\scripts\packaging\build-classifier-exe.ps1
 ```
 
-Executable builds are not committed to this repository. Publish or distribute the generated launcher as a release ZIP together with `classify-clientes.ps1`, `config.example.ps1`, and `lib\preflight.ps1`.
+Executable builds are not committed to this repository. Publish or distribute the generated launcher as a release ZIP together with `classify-clientes.ps1`, `build-client-staging.ps1`, `config.example.ps1`, and `lib\preflight.ps1`.
 
 ## Running Tests
 

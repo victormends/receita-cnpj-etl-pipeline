@@ -40,7 +40,36 @@ CREATE TABLE IF NOT EXISTS empresas_dados (
     porte_empresa VARCHAR(10)
 );
 
--- 3. Import log
+-- 3. CNAE category rules derived only from Receita/government fields.
+-- match_type:
+--   exact  = cnae must equal cnae_inicio
+--   prefix = cnae must start with cnae_inicio
+--   range  = first two CNAE digits must be between cnae_inicio and cnae_fim
+CREATE TABLE IF NOT EXISTS cnae_categoria_map (
+    categoria TEXT NOT NULL,
+    match_type TEXT NOT NULL CHECK (match_type IN ('exact', 'prefix', 'range')),
+    cnae_inicio VARCHAR(7) NOT NULL,
+    cnae_fim VARCHAR(7) NOT NULL DEFAULT '',
+    prioridade INTEGER NOT NULL DEFAULT 100,
+    ativo BOOLEAN NOT NULL DEFAULT TRUE,
+    observacao TEXT,
+    PRIMARY KEY (categoria, match_type, cnae_inicio, cnae_fim)
+);
+
+-- 4. Per-client category matches. One CNPJ can match multiple categories.
+CREATE TABLE IF NOT EXISTS estabelecimentos_categorias (
+    cnpj VARCHAR(14) NOT NULL REFERENCES estabelecimentos_crm(cnpj) ON DELETE CASCADE,
+    categoria TEXT NOT NULL,
+    categoria_principal BOOLEAN NOT NULL DEFAULT FALSE,
+    cnae_match VARCHAR(7),
+    cnae_origem TEXT NOT NULL CHECK (cnae_origem IN ('principal', 'secundaria', 'governo')),
+    match_type TEXT NOT NULL,
+    prioridade INTEGER NOT NULL,
+    classificacao_fonte TEXT NOT NULL DEFAULT 'Receita CNAE',
+    PRIMARY KEY (cnpj, categoria, cnae_match, cnae_origem)
+);
+
+-- 5. Import log
 CREATE TABLE IF NOT EXISTS import_log (
     id SERIAL PRIMARY KEY,
     fase TEXT,
@@ -49,7 +78,7 @@ CREATE TABLE IF NOT EXISTS import_log (
     data_import TIMESTAMP DEFAULT NOW()
 );
 
--- 4. Main indexes
+-- 6. Main indexes
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_data ON estabelecimentos_crm(data_inicio_atividade);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_uf ON estabelecimentos_crm(uf);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_municipio ON estabelecimentos_crm(municipio);
@@ -57,8 +86,13 @@ CREATE INDEX IF NOT EXISTS idx_estabelecimentos_cnae ON estabelecimentos_crm(cna
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_cnpj_basico ON estabelecimentos_crm((LEFT(cnpj, 8)));
 CREATE INDEX IF NOT EXISTS idx_empresas_cnpj_basico ON empresas_dados(cnpj_basico);
 CREATE INDEX IF NOT EXISTS idx_import_log_data ON import_log(data_import);
+CREATE INDEX IF NOT EXISTS idx_cnae_categoria_map_active ON cnae_categoria_map(ativo, match_type, cnae_inicio, cnae_fim);
+CREATE INDEX IF NOT EXISTS idx_estabelecimentos_categorias_cnpj ON estabelecimentos_categorias(cnpj);
+CREATE INDEX IF NOT EXISTS idx_estabelecimentos_categorias_categoria ON estabelecimentos_categorias(categoria);
 
--- 5. Comments
+-- 7. Comments
 COMMENT ON TABLE estabelecimentos_crm IS 'Filtered CNPJ establishments for downstream export';
 COMMENT ON TABLE empresas_dados IS 'Company legal name data used for joins';
+COMMENT ON TABLE cnae_categoria_map IS 'CNAE-to-business-category rules based only on Receita/government CNAE data';
+COMMENT ON TABLE estabelecimentos_categorias IS 'Business category matches generated from establishment CNAE fields';
 COMMENT ON TABLE import_log IS 'Execution log for pipeline runs';
