@@ -11,6 +11,8 @@ param(
 
     [string]$SimplesPath,
 
+    [string]$ClassifiedInputPath,
+
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
@@ -51,16 +53,16 @@ function Resolve-OptionalFileLocal {
 
 function Resolve-DefaultEnrichmentPath {
     $candidates = @(
-        (Join-Path $scriptRoot 'data\operational-enrichment.csv'),
-        (Join-Path $projectRoot 'data\operational-enrichment.csv'),
-        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\operational-enrichment.csv')
+        (Join-Path $scriptRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
+        (Join-Path $projectRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
+        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\Clientes_A_limpo_cnpj_corrigido.csv')
     )
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
 
-    throw 'Enrichment CSV was not provided and the default operational-enrichment.csv was not found beside the executable, in project data, or in Downloads.'
+    throw 'Enrichment CSV was not provided and the default Clientes_A_limpo_cnpj_corrigido.csv was not found beside the executable, in project data, or in Downloads.'
 }
 
 function Normalize-DigitsLocal {
@@ -105,8 +107,8 @@ function Convert-ToPgBoolText {
     param([object]$Value)
     $text = ([string]$Value).Trim().ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($text)) { return '' }
-    if ($text -in @('sim', 's', 'yes', 'y', 'true', '1')) { return 'true' }
-    if ($text -in @('nao', 'não', 'n', 'no', 'false', '0')) { return 'false' }
+    if ($text -in @('sim', 's', 'yes', 'y', 'true', 't', '1')) { return 'true' }
+    if ($text -in @('nao', 'não', 'n', 'no', 'false', 'f', '0')) { return 'false' }
     return ''
 }
 
@@ -117,11 +119,25 @@ function Add-ColumnValue {
 
 function New-EmptyGovernmentRow {
     return [pscustomobject]@{
-        cnae_fiscal_principal = ''; cnae_fiscal_secundaria = ''; categoria_principal = ''; categorias_detectadas = ''
-        categoria_transporte = ''; categoria_gas_combustivel = ''; categoria_farmacia = ''; categoria_construtora = ''
-        categoria_industria = ''; categoria_agro_produtor_rural = ''; categoria_telecom = ''; categoria_ti_software = ''
-        categoria_saude_clinica = ''; categoria_financeiro = ''; categoria_cooperativa = ''; categoria_imobiliario = ''
-        categoria_grafica = ''; categoria_frigorifico = ''; categoria_importador_exportador_status = 'external_source_required'
+        cnae_fiscal_principal = ''
+        cnae_fiscal_secundaria = ''
+        categoria_principal = ''
+        categorias_detectadas = ''
+        categoria_transporte = ''
+        categoria_gas_combustivel = ''
+        categoria_farmacia = ''
+        categoria_construtora = ''
+        categoria_industria = ''
+        categoria_agro_produtor_rural = ''
+        categoria_telecom = ''
+        categoria_ti_software = ''
+        categoria_saude_clinica = ''
+        categoria_financeiro = ''
+        categoria_cooperativa = ''
+        categoria_imobiliario = ''
+        categoria_grafica = ''
+        categoria_frigorifico = ''
+        categoria_importador_exportador_status = 'external_source_required'
         categoria_beneficio_fiscal_status = 'external_source_required'
     }
 }
@@ -129,24 +145,133 @@ function New-EmptyGovernmentRow {
 function Export-GovernmentCategories {
     param([string]$Path)
 
-    if (-not (Get-Command Invoke-CnpjPreflight -ErrorAction SilentlyContinue)) {
-        throw 'Government data export requires scripts\lib\preflight.ps1.'
+    $psqlCandidates = @(
+        'D:\Postgres\bin\psql.exe',
+        'C:\Postgres17\bin\psql.exe',
+        'C:\Postgres16\bin\psql.exe',
+        'psql.exe'
+    )
+    $psqlPath = $psqlCandidates | Where-Object { (Get-Command $_ -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if (-not $psqlPath) { throw 'psql.exe was not found. Cannot export government CNAE data.' }
+
+    $hostCandidates = @('localhost', '127.0.0.1')
+    $portCandidates = @($env:CNPJ_ETL_DB_PORT, $env:PGPORT, '5253', '5432') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+    $dbName = if ($env:CNPJ_ETL_DB_NAME) { $env:CNPJ_ETL_DB_NAME } else { 'postgres' }
+    $dbUser = if ($env:CNPJ_ETL_DB_USER) { $env:CNPJ_ETL_DB_USER } elseif ($env:PGUSER) { $env:PGUSER } else { 'postgres' }
+
+    # Capture password from any known env var before launching jobs
+    $pgPassword = if ($env:PGPASSWORD) { $env:PGPASSWORD } elseif ($env:CNPJ_ETL_DB_PASSWORD) { $env:CNPJ_ETL_DB_PASSWORD } else { '' }
+
+    $connection = $null
+    foreach ($hostName in $hostCandidates) {
+        foreach ($port in $portCandidates) {
+            $job = Start-Job -ScriptBlock {
+                param($Exe, $HostName, $Port, $Database, $User, $PgPass)
+                if ($PgPass) { $env:PGPASSWORD = $PgPass }
+                $output = & $Exe -h $HostName -p $Port -d $Database -U $User -w -tAc 'SELECT 1;' 2>&1
+                [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String).Trim() }
+            } -ArgumentList $psqlPath, $hostName, $port, $dbName, $dbUser, $pgPassword
+            $completed = Wait-Job -Job $job -Timeout 8
+            if ($completed) {
+                $result = Receive-Job -Job $job -ErrorAction SilentlyContinue
+                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                if ($result.ExitCode -eq 0) {
+                    $connection = [pscustomobject]@{ Host = $hostName; Port = $port; Database = $dbName; User = $dbUser; PgPass = $pgPassword }
+                    break
+                }
+            }
+            else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($connection) { break }
     }
 
-    $bootstrap = Import-CnpjConfig -ScriptRoot $scriptRoot
-    $config = $bootstrap.Config
-    $timeout = if ($config.ContainsKey('sqlCommandTimeoutSeconds')) { [int]$config.sqlCommandTimeoutSeconds } else { 3600 }
-    $tools = Invoke-CnpjPreflight -Config $config -EnsureDirectories @($config.dirTemp, $config.dirOut) -MinFreeSpaceGB @{ $config.dirTemp = 1; $config.dirOut = 1 } -RequirePostgres -RequireDatabase
-    Set-PostgresPasswordEnv -Config $config
+    if (-not $connection) { throw 'Could not connect to PostgreSQL without prompting for a password. Set CNPJ_ETL_DB_PORT/PGPORT and PGPASSWORD, or provide an exported CNAE file.' }
 
-    $copyPath = ConvertTo-PsqlPathLiteral -Path $Path
     $sql = @"
 COPY (
-    WITH category_flags AS (
+    WITH estabelecimentos_governo AS (
+        SELECT
+            cnpj,
+            left(cnpj, 8) AS cnpj_basico,
+            cnae_fiscal_principal,
+            cnae_fiscal_secundaria,
+            '' AS natureza_juridica
+        FROM estabelecimentos_crm
+        UNION
+        SELECT
+            cnpj_basico || cnpj_ordem || cnpj_dv AS cnpj,
+            cnpj_basico,
+            cnae_fiscal_principal,
+            cnae_fiscal_secundaria,
+            '' AS natureza_juridica
+        FROM tmp_estabelecimentos
+        WHERE situacao_cadastral = '02'
+        UNION
+        SELECT
+            cnpj,
+            cnpj_basico,
+            cnae_fiscal_principal,
+            cnae_fiscal_secundaria,
+            natureza_juridica
+        FROM clientes_ativos_governo
+    ),
+    cnaes AS (
+        SELECT cnpj, NULLIF(regexp_replace(COALESCE(cnae_fiscal_principal, ''), '[^0-9]', '', 'g'), '') AS cnae, 'principal' AS cnae_origem
+        FROM estabelecimentos_governo
+        UNION ALL
+        SELECT e.cnpj, s.cnae, 'secundaria' AS cnae_origem
+        FROM estabelecimentos_governo e
+        CROSS JOIN LATERAL regexp_split_to_table(COALESCE(e.cnae_fiscal_secundaria, ''), '[^0-9]+') AS s(cnae)
+        WHERE s.cnae <> ''
+    ),
+    cnae_matches AS (
+        SELECT cnpj, cnae, cnae_origem, v.categoria, v.prioridade
+        FROM cnaes
+        CROSS JOIN LATERAL (VALUES
+            ('gas_combustivel', cnae IN ('4731800', '4784900', '3520401'), 10),
+            ('farmacia', cnae IN ('4771701', '4771702', '4771703'), 10),
+            ('imobiliario', cnae IN ('6810201', '6810202', '6821801'), 10),
+            ('frigorifico', cnae IN ('1011201', '1011202', '1012101'), 10),
+            ('grafica', cnae LIKE '181%', 80),
+            ('agro_produtor_rural', substring(cnae, 1, 2) BETWEEN '01' AND '03', 50),
+            ('industria', substring(cnae, 1, 2) BETWEEN '10' AND '33', 50),
+            ('construtora', substring(cnae, 1, 2) BETWEEN '41' AND '43', 50),
+            ('transporte', substring(cnae, 1, 2) BETWEEN '49' AND '53', 50),
+            ('telecom', substring(cnae, 1, 2) = '61', 50),
+            ('ti_software', substring(cnae, 1, 2) BETWEEN '62' AND '63', 50),
+            ('financeiro', substring(cnae, 1, 2) BETWEEN '64' AND '66', 50),
+            ('saude_clinica', substring(cnae, 1, 2) = '86', 50)
+        ) AS v(categoria, matched, prioridade)
+        WHERE cnae IS NOT NULL AND v.matched
+    ),
+    government_matches AS (
+        SELECT DISTINCT e.cnpj, '' AS cnae, 'governo' AS cnae_origem, 'cooperativa' AS categoria, 5 AS prioridade
+        FROM estabelecimentos_governo e
+        LEFT JOIN (
+            SELECT cnpj_basico, natureza_juridica FROM empresas_dados
+            UNION
+            SELECT cnpj_basico, natureza_juridica FROM tmp_empresas
+        ) d ON d.cnpj_basico = e.cnpj_basico
+        WHERE COALESCE(NULLIF(e.natureza_juridica, ''), d.natureza_juridica) = '2143'
+    ),
+    all_matches AS (
+        SELECT * FROM cnae_matches
+        UNION ALL
+        SELECT * FROM government_matches
+    ),
+    principal_category AS (
+        SELECT DISTINCT ON (cnpj) cnpj, categoria
+        FROM all_matches
+        ORDER BY cnpj, prioridade, CASE cnae_origem WHEN 'governo' THEN 0 WHEN 'principal' THEN 1 ELSE 2 END, categoria
+    ),
+    category_flags AS (
         SELECT
             cnpj,
             string_agg(DISTINCT categoria, ',' ORDER BY categoria) AS categorias_detectadas,
-            max(categoria) FILTER (WHERE categoria_principal) AS categoria_principal,
+            max(categoria) FILTER (WHERE categoria = (SELECT pc.categoria FROM principal_category pc WHERE pc.cnpj = all_matches.cnpj)) AS categoria_principal,
             bool_or(categoria = 'transporte') AS categoria_transporte,
             bool_or(categoria = 'gas_combustivel') AS categoria_gas_combustivel,
             bool_or(categoria = 'farmacia') AS categoria_farmacia,
@@ -161,7 +286,7 @@ COPY (
             bool_or(categoria = 'imobiliario') AS categoria_imobiliario,
             bool_or(categoria = 'grafica') AS categoria_grafica,
             bool_or(categoria = 'frigorifico') AS categoria_frigorifico
-        FROM estabelecimentos_categorias
+        FROM all_matches
         GROUP BY cnpj
     )
     SELECT
@@ -186,16 +311,31 @@ COPY (
         COALESCE(f.categoria_frigorifico, false) AS categoria_frigorifico,
         'external_source_required' AS categoria_importador_exportador_status,
         'external_source_required' AS categoria_beneficio_fiscal_status
-    FROM estabelecimentos_crm e
+    FROM estabelecimentos_governo e
     LEFT JOIN category_flags f ON f.cnpj = e.cnpj
     ORDER BY e.cnpj
-) TO '$copyPath'
+) TO STDOUT
 WITH (FORMAT CSV, HEADER TRUE, DELIMITER ';', ENCODING 'UTF8', NULL '');
 "@
 
     $sqlFile = Join-Path ([System.IO.Path]::GetTempPath()) ("client-government-export-{0}.sql" -f ([guid]::NewGuid().ToString('N')))
     [System.IO.File]::WriteAllText($sqlFile, $sql, [System.Text.Encoding]::UTF8)
-    try { Invoke-PsqlFileChecked -PsqlPath $tools.PsqlPath -Config $config -FilePath $sqlFile -Description 'export government CNAE categories' -TimeoutSec $timeout }
+    try {
+        $job = Start-Job -ScriptBlock {
+            param($Exe, $Connection, $SqlFile, $OutPath)
+            if ($Connection.PgPass) { $env:PGPASSWORD = $Connection.PgPass }
+            $output = & $Exe -h $Connection.Host -p $Connection.Port -d $Connection.Database -U $Connection.User -w -v ON_ERROR_STOP=1 -f $SqlFile 2>&1
+            if ($LASTEXITCODE -eq 0) { [System.IO.File]::WriteAllLines($OutPath, [string[]]$output, [System.Text.Encoding]::UTF8) }
+            [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String).Trim() }
+        } -ArgumentList $psqlPath, $connection, $sqlFile, $Path
+        $completed = Wait-Job -Job $job -Timeout 120
+        if (-not $completed) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+            throw 'Government CNAE export timed out after 120s.'
+        }
+        $result = Receive-Job -Job $job -ErrorAction SilentlyContinue
+        if ($result.ExitCode -ne 0) { throw "Government CNAE export failed: $($result.Output)" }
+    }
     finally { Remove-Item -LiteralPath $sqlFile -Force -ErrorAction SilentlyContinue }
 }
 
@@ -204,6 +344,7 @@ $InputPath = Resolve-RequiredFileLocal -Path $InputPath -Label 'Input file'
 if ([string]::IsNullOrWhiteSpace($EnrichmentPath)) { $EnrichmentPath = Resolve-DefaultEnrichmentPath }
 else { $EnrichmentPath = Resolve-RequiredFileLocal -Path $EnrichmentPath -Label 'Enrichment CSV' }
 $SimplesPath = Resolve-OptionalFileLocal -Path $SimplesPath -Label 'Simples CSV'
+$ClassifiedInputPath = Resolve-OptionalFileLocal -Path $ClassifiedInputPath -Label 'Existing classified CSV'
 
 $outputParent = Split-Path -Parent $OutputPath
 if (-not [string]::IsNullOrWhiteSpace($outputParent) -and -not (Test-Path -LiteralPath $outputParent)) { New-Item -ItemType Directory -Path $outputParent -Force | Out-Null }
@@ -219,13 +360,24 @@ Write-Host ' CLIENT STAGING BUILDER' -ForegroundColor Cyan
 Write-Host '===================================================' -ForegroundColor Cyan
 Write-Host " Base input:  $InputPath" -ForegroundColor Yellow
 Write-Host " Enrichment:  $EnrichmentPath" -ForegroundColor Yellow
-Write-Host " Simples:     $(if ($SimplesPath) { $SimplesPath } else { 'not provided; regime fields will stay unclassified' })" -ForegroundColor Yellow
+Write-Host " Classified:  $(if ($ClassifiedInputPath) { $ClassifiedInputPath } else { 'generated from base input' })" -ForegroundColor Yellow
+Write-Host " Simples:     $(if ($SimplesPath) { $SimplesPath } elseif ($ClassifiedInputPath) { 'already supplied by classified input when present' } else { 'not provided; regime fields will stay unclassified' })" -ForegroundColor Yellow
 Write-Host " Output:      $OutputPath" -ForegroundColor Yellow
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
-$classifierArgs = @{ InputPath = $InputPath; OutputPath = $ClassifiedOutputPath; Delimiter = $Delimiter; Mode = $Mode }
-if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $classifierArgs.SimplesPath = $SimplesPath }
-& $classifier @classifierArgs
+if ($ClassifiedInputPath) {
+    $ClassifiedOutputPath = $ClassifiedInputPath
+}
+else {
+    $classifierArgs = @{
+        InputPath = $InputPath
+        OutputPath = $ClassifiedOutputPath
+        Delimiter = $Delimiter
+        Mode = $Mode
+    }
+    if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $classifierArgs.SimplesPath = $SimplesPath }
+    & $classifier @classifierArgs
+}
 
 $classifiedRows = @(Import-Csv -LiteralPath $ClassifiedOutputPath -Delimiter $Delimiter -Encoding UTF8)
 $enrichmentRows = @(Import-Csv -LiteralPath $EnrichmentPath -Delimiter $Delimiter -Encoding UTF8)
@@ -249,7 +401,7 @@ foreach ($id in $enrichmentGroups.Keys) {
     if ($group.Count -gt 1) { $duplicateEnrichmentIds++ }
     $chosen = $group | Sort-Object `
         @{ Expression = { if ((Normalize-CnpjLocal -Value $_.cnpj_corrigido) -match '^\d{14}$') { 0 } else { 1 } } }, `
-        @{ Expression = { -($_.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Value) }).Count } }, `
+        @{ Expression = { -(@($_.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Value) }).Count) } }, `
         @{ Expression = { [int]$_.__linha_origem } } | Select-Object -First 1
     $enrichmentLookup[$id] = [pscustomobject]@{ Row = $chosen; IsDuplicate = ($group.Count -gt 1) }
 }
@@ -273,6 +425,11 @@ $baseIds = @{}
 $duplicateBaseIds = New-Object System.Collections.ArrayList
 $results = New-Object System.Collections.ArrayList
 $review = New-Object System.Collections.ArrayList
+$matchedEnrichmentRows = 0
+$unmatchedEnrichmentRows = 0
+$safeCnpjCount = 0
+$missingCnpjCount = 0
+$cnpjDivergenceCount = 0
 
 foreach ($base in $classifiedRows) {
     $idOriginal = Get-PropValue -Row $base -Names @('ID', 'id_original')
@@ -289,6 +446,7 @@ foreach ($base in $classifiedRows) {
         $enriched = $enrichmentMatch.Row
         $matchStatus = if ($enrichmentMatch.IsDuplicate) { 'duplicate_resolved' } else { 'matched' }
     }
+    if ($matchStatus -eq 'sem_match_enriquecimento') { $unmatchedEnrichmentRows++ } else { $matchedEnrichmentRows++ }
 
     $classifierCnpj = Normalize-CnpjLocal -Value (Get-PropValue -Row $base -Names @('cnpj_normalizado'))
     $baseCnpj = Normalize-CnpjLocal -Value (Get-PropValue -Row $base -Names @('CNPJ', 'cnpj'))
@@ -301,60 +459,53 @@ foreach ($base in $classifiedRows) {
 
     $diverge = ''
     if ($cnpj -and $enrichedCnpj) { $diverge = if ($cnpj -eq $enrichedCnpj) { 'false' } else { 'true' } }
+    if ($cnpj -match '^\d{14}$') { $safeCnpjCount++ } else { $missingCnpjCount++ }
+    if ($diverge -eq 'true') { $cnpjDivergenceCount++ }
 
     $gov = if ($cnpj -and $governmentLookup.ContainsKey($cnpj)) { $governmentLookup[$cnpj] } else { New-EmptyGovernmentRow }
-    $row = [ordered]@{}
-    Add-ColumnValue $row 'id_original' $idOriginal
-    Add-ColumnValue $row 'id_normalizado' $id
-    Add-ColumnValue $row 'nome' (Get-PropValue -Row $base -Names @('Nome', 'nome'))
-    Add-ColumnValue $row 'nome_normalizado' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('nome_normalizado') } else { '' })
-    Add-ColumnValue $row 'razao_social' (Get-PropValue -Row $base -Names @('Razão Social', 'Razao Social', 'razao_social'))
-    Add-ColumnValue $row 'razao_social_normalizada' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('razao_social_normalizada') } else { '' })
-    Add-ColumnValue $row 'validade_senha' (Get-PropValue -Row $base -Names @('Validade da Senha', 'validade_senha'))
-    Add-ColumnValue $row 'cidade' (Get-PropValue -Row $base -Names @('Cidade', 'cidade'))
-    Add-ColumnValue $row 'estado' (Get-PropValue -Row $base -Names @('Estado', 'estado'))
-    Add-ColumnValue $row 'cnpj' $cnpj
-    Add-ColumnValue $row 'cnpj_formatado' (Format-CnpjLocal -Cnpj $cnpj)
-    Add-ColumnValue $row 'cnpj_basico' $(if ($cnpj -match '^\d{14}$') { $cnpj.Substring(0, 8) } else { '' })
-    Add-ColumnValue $row 'cnpj_fonte' $cnpjFonte
-    Add-ColumnValue $row 'cnpj_enriquecimento' $enrichedCnpj
-    Add-ColumnValue $row 'cnpj_fonte_enriquecimento' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('cnpj_fonte_correcao') } else { '' })
-    Add-ColumnValue $row 'cnpj_diverge_enriquecimento' $diverge
-    Add-ColumnValue $row 'regime_tributario' (Get-PropValue -Row $base -Names @('regime_tributario'))
-    Add-ColumnValue $row 'classificacao_fonte' (Get-PropValue -Row $base -Names @('classificacao_fonte'))
-    Add-ColumnValue $row 'classificacao_observacao' (Get-PropValue -Row $base -Names @('classificacao_observacao'))
-    Add-ColumnValue $row 'postgres_versao' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Versão Postgres') } else { '' })
-    Add-ColumnValue $row 'postgres_versao_normalizada' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('postgres_versao_normalizada') } else { '' })
-    Add-ColumnValue $row 'arquitetura_os' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('32/64') } else { '' })
-    Add-ColumnValue $row 'arquitetura_os_normalizada' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('arquitetura_os_normalizada') } else { '' })
-    Add-ColumnValue $row 'provedor' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Provedor') } else { '' })
-    Add-ColumnValue $row 'provedor_normalizado' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('provedor_normalizado') } else { '' })
-    Add-ColumnValue $row 'cpf_cnpj_internet' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('CPF/CNPJ Internet') } else { '' })
-    Add-ColumnValue $row 'cpf_cnpj_internet_normalizado' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('cpf_cnpj_internet_normalizado') } else { '' })
-    Add-ColumnValue $row 'nome_internet' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Nome Internet') } else { '' })
-    Add-ColumnValue $row 'nome_internet_normalizado' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('nome_internet_normalizado') } else { '' })
-    Add-ColumnValue $row 'atualizando' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Atualizando') } else { '' })
-    Add-ColumnValue $row 'atualizando_normalizado' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('atualizando_normalizado') } else { '' })
-    Add-ColumnValue $row 'flag_postgres_17_ou_nuvem' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres 17 ou banco nuvem')) } else { '' })
-    Add-ColumnValue $row 'flag_postgres_desatualizado_32_bits' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres desatualizado 32 bits')) } else { '' })
-    Add-ColumnValue $row 'flag_postgres_atualizado_sem_replicacao' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres atualizado sem replicação')) } else { '' })
-    Add-ColumnValue $row 'flag_multiplos_computadores' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Múltiplos computadores')) } else { '' })
-    Add-ColumnValue $row 'flag_sistema_web' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema web')) } else { '' })
-    Add-ColumnValue $row 'flag_sistema_deluito_contador' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema Deluito contador')) } else { '' })
-    Add-ColumnValue $row 'classificacao_por_cor' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Classificação por cor') } else { '' })
-    Add-ColumnValue $row 'status_linha_pela_cor' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Status da linha pela cor') } else { '' })
-    Add-ColumnValue $row 'cor_predominante_linha' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Cor predominante da linha') } else { '' })
-    Add-ColumnValue $row 'cor_celula_id' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('Cor da célula ID') } else { '' })
-    Add-ColumnValue $row 'enrichment_match_status' $matchStatus
-    Add-ColumnValue $row 'linha_origem_enriquecimento' $(if ($enriched) { $enriched.__linha_origem } else { '' })
-    foreach ($name in @('cnae_fiscal_principal','cnae_fiscal_secundaria','categoria_principal','categorias_detectadas','categoria_transporte','categoria_gas_combustivel','categoria_farmacia','categoria_construtora','categoria_industria','categoria_agro_produtor_rural','categoria_telecom','categoria_ti_software','categoria_saude_clinica','categoria_financeiro','categoria_cooperativa','categoria_imobiliario','categoria_grafica','categoria_frigorifico','categoria_importador_exportador_status','categoria_beneficio_fiscal_status')) {
-        Add-ColumnValue $row $name (Get-PropValue -Row $gov -Names @($name))
-    }
+    $auditRow = [ordered]@{}
+    Add-ColumnValue $auditRow 'id_normalizado' $id
+    Add-ColumnValue $auditRow 'nome' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('nome_normalizado') } else { Get-PropValue -Row $base -Names @('Nome', 'nome') })
+    Add-ColumnValue $auditRow 'razao_social' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('razao_social_normalizada') } else { Get-PropValue -Row $base -Names @('Razão Social', 'Razao Social', 'razao_social') })
+    Add-ColumnValue $auditRow 'cidade' (Get-PropValue -Row $base -Names @('Cidade', 'cidade'))
+    Add-ColumnValue $auditRow 'estado' (Get-PropValue -Row $base -Names @('Estado', 'estado'))
+    Add-ColumnValue $auditRow 'cnpj' $cnpj
+    Add-ColumnValue $auditRow 'regime_tributario' (Get-PropValue -Row $base -Names @('regime_tributario'))
+    Add-ColumnValue $auditRow 'postgres_versao' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('postgres_versao_normalizada') } else { '' })
+    Add-ColumnValue $auditRow 'arquitetura_os' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('arquitetura_os_normalizada') } else { '' })
+    Add-ColumnValue $auditRow 'provedor' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('provedor_normalizado') } else { '' })
+    Add-ColumnValue $auditRow 'cpf_cnpj_internet' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('cpf_cnpj_internet_normalizado') } else { '' })
+    Add-ColumnValue $auditRow 'nome_internet' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('nome_internet_normalizado') } else { '' })
+    Add-ColumnValue $auditRow 'atualizando' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('atualizando_normalizado') } else { '' })
+    Add-ColumnValue $auditRow 'flag_postgres_17_ou_nuvem' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres 17 ou banco nuvem')) } else { '' })
+    Add-ColumnValue $auditRow 'flag_postgres_desatualizado_32_bits' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres desatualizado 32 bits')) } else { '' })
+    Add-ColumnValue $auditRow 'flag_postgres_atualizado_sem_replicacao' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres atualizado sem replicação')) } else { '' })
+    Add-ColumnValue $auditRow 'flag_multiplos_computadores' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Múltiplos computadores')) } else { '' })
+    Add-ColumnValue $auditRow 'flag_sistema_web' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema web')) } else { '' })
+    Add-ColumnValue $auditRow 'flag_sistema_deluito_contador' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema Deluito contador')) } else { '' })
+    Add-ColumnValue $auditRow 'cnae_fiscal_principal' (Get-PropValue -Row $gov -Names @('cnae_fiscal_principal'))
+    Add-ColumnValue $auditRow 'cnae_fiscal_secundaria' (Get-PropValue -Row $gov -Names @('cnae_fiscal_secundaria'))
+    Add-ColumnValue $auditRow 'categoria_principal' (Get-PropValue -Row $gov -Names @('categoria_principal'))
+    Add-ColumnValue $auditRow 'categorias_detectadas' (Get-PropValue -Row $gov -Names @('categorias_detectadas'))
 
-    $object = [pscustomobject]$row
+    $object = [pscustomobject]$auditRow
     [void]$results.Add($object)
-    if ([string]::IsNullOrWhiteSpace($id) -or $matchStatus -ne 'matched' -or [string]::IsNullOrWhiteSpace($cnpj) -or $diverge -eq 'true' -or ($IncludeGovernmentData -and [string]::IsNullOrWhiteSpace([string]$gov.cnae_fiscal_principal))) {
-        [void]$review.Add($object)
+
+    $reviewRow = [ordered]@{}
+    Add-ColumnValue $reviewRow 'id_original' $idOriginal
+    Add-ColumnValue $reviewRow 'id_normalizado' $id
+    Add-ColumnValue $reviewRow 'cnpj' $cnpj
+    Add-ColumnValue $reviewRow 'cnpj_fonte' $cnpjFonte
+    Add-ColumnValue $reviewRow 'cnpj_enriquecimento' $enrichedCnpj
+    Add-ColumnValue $reviewRow 'cnpj_diverge_enriquecimento' $diverge
+    Add-ColumnValue $reviewRow 'enrichment_match_status' $matchStatus
+    Add-ColumnValue $reviewRow 'linha_origem_enriquecimento' $(if ($enriched) { $enriched.__linha_origem } else { '' })
+    Add-ColumnValue $reviewRow 'classificacao_fonte' (Get-PropValue -Row $base -Names @('classificacao_fonte'))
+    Add-ColumnValue $reviewRow 'classificacao_observacao' (Get-PropValue -Row $base -Names @('classificacao_observacao'))
+    Add-ColumnValue $reviewRow 'cnae_fiscal_principal' (Get-PropValue -Row $gov -Names @('cnae_fiscal_principal'))
+
+    if ([string]::IsNullOrWhiteSpace($id) -or $matchStatus -ne 'matched' -or [string]::IsNullOrWhiteSpace($cnpj) -or $diverge -eq 'true') {
+        [void]$review.Add([pscustomobject]$reviewRow)
     }
 }
 
@@ -366,14 +517,15 @@ $review | Export-Csv -LiteralPath $ReviewPath -Delimiter $Delimiter -Encoding UT
 $summary = [ordered]@{
     total_base_rows = $classifiedRows.Count
     total_final_rows = $results.Count
-    matched_enrichment_rows = @($results | Where-Object { $_.enrichment_match_status -eq 'matched' }).Count
-    unmatched_enrichment_rows = @($results | Where-Object { $_.enrichment_match_status -eq 'sem_match_enriquecimento' }).Count
+    matched_enrichment_rows = $matchedEnrichmentRows
+    unmatched_enrichment_rows = $unmatchedEnrichmentRows
     duplicate_enrichment_ids = $duplicateEnrichmentIds
-    safe_cnpj_count = @($results | Where-Object { $_.cnpj -match '^\d{14}$' }).Count
-    missing_cnpj_count = @($results | Where-Object { $_.cnpj -notmatch '^\d{14}$' }).Count
-    cnpj_divergence_count = @($results | Where-Object { $_.cnpj_diverge_enriquecimento -eq 'true' }).Count
+    safe_cnpj_count = $safeCnpjCount
+    missing_cnpj_count = $missingCnpjCount
+    cnpj_divergence_count = $cnpjDivergenceCount
     review_rows = $review.Count
     output_path = $OutputPath
+    output_columns = if ($results.Count -gt 0) { @($results[0].PSObject.Properties).Count } else { 0 }
     review_path = $ReviewPath
     classified_output_path = $ClassifiedOutputPath
 }
@@ -381,6 +533,7 @@ $summary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $SummaryPath -Enco
 
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 Write-Host "Final rows: $($results.Count)" -ForegroundColor Gray
+Write-Host "Output columns: $($summary.output_columns)" -ForegroundColor Gray
 Write-Host "Matched enrichment: $($summary.matched_enrichment_rows)" -ForegroundColor Gray
 Write-Host "Review rows: $($review.Count)" -ForegroundColor Gray
 Write-Host "Done: $OutputPath" -ForegroundColor Green

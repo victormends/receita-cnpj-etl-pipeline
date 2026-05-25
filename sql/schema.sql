@@ -69,7 +69,26 @@ CREATE TABLE IF NOT EXISTS estabelecimentos_categorias (
     PRIMARY KEY (cnpj, categoria, cnae_match, cnae_origem)
 );
 
--- 5. Import log
+-- 5. Government lookup for existing active clients, independent from CRM lead filters.
+-- This persists CNAE data for the user's current customer base so the classifier can enrich them later.
+CREATE TABLE IF NOT EXISTS clientes_ativos_governo (
+    cnpj VARCHAR(14) PRIMARY KEY,
+    cnpj_basico VARCHAR(8),
+    razao_social TEXT,
+    natureza_juridica VARCHAR(4),
+    capital_social TEXT,
+    porte_empresa VARCHAR(10),
+    nome_fantasia TEXT,
+    situacao_cadastral VARCHAR(2),
+    data_inicio_atividade VARCHAR(8),
+    cnae_fiscal_principal VARCHAR(7),
+    cnae_fiscal_secundaria TEXT,
+    uf CHAR(2),
+    municipio VARCHAR(4),
+    atualizado_em TIMESTAMP DEFAULT NOW()
+);
+
+-- 6. Import log
 CREATE TABLE IF NOT EXISTS import_log (
     id SERIAL PRIMARY KEY,
     fase TEXT,
@@ -78,7 +97,7 @@ CREATE TABLE IF NOT EXISTS import_log (
     data_import TIMESTAMP DEFAULT NOW()
 );
 
--- 6. Main indexes
+-- 7. Main indexes
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_data ON estabelecimentos_crm(data_inicio_atividade);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_uf ON estabelecimentos_crm(uf);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_municipio ON estabelecimentos_crm(municipio);
@@ -89,10 +108,13 @@ CREATE INDEX IF NOT EXISTS idx_import_log_data ON import_log(data_import);
 CREATE INDEX IF NOT EXISTS idx_cnae_categoria_map_active ON cnae_categoria_map(ativo, match_type, cnae_inicio, cnae_fim);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_categorias_cnpj ON estabelecimentos_categorias(cnpj);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_categorias_categoria ON estabelecimentos_categorias(categoria);
+CREATE INDEX IF NOT EXISTS idx_clientes_ativos_governo_cnpj_basico ON clientes_ativos_governo(cnpj_basico);
+CREATE INDEX IF NOT EXISTS idx_clientes_ativos_governo_cnae ON clientes_ativos_governo(cnae_fiscal_principal);
 
--- 7. Comments
-COMMENT ON TABLE estabelecimentos_crm IS 'Filtered CNPJ establishments for downstream export';
+-- 8. Comments
+COMMENT ON TABLE estabelecimentos_crm IS 'Qualified CNPJ leads for CRM - PR/SC region';
 COMMENT ON TABLE empresas_dados IS 'Company legal name data used for joins';
 COMMENT ON TABLE cnae_categoria_map IS 'CNAE-to-business-category rules based only on Receita/government CNAE data';
 COMMENT ON TABLE estabelecimentos_categorias IS 'Business category matches generated from establishment CNAE fields';
+COMMENT ON TABLE clientes_ativos_governo IS 'Government CNAE/company lookup for existing active clients, captured during import before cleanup';
 COMMENT ON TABLE import_log IS 'Execution log for pipeline runs';

@@ -4,6 +4,7 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'lib\preflight.ps1')
 $ScriptDir = Resolve-ScriptRoot -Invocation $MyInvocation -FallbackBaseDirectory $PSScriptRoot
 
@@ -34,6 +35,8 @@ Write-Host " Destino: $($config.dirDownload)" -ForegroundColor Yellow
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
 $failed = @()
+$curlCommand = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$curlPath = if ($curlCommand) { $curlCommand.Path } else { $null }
 
 foreach ($arquivo in $arquivos) {
     $url = "$baseUrl/$arquivo"
@@ -60,7 +63,13 @@ foreach ($arquivo in $arquivos) {
 
     try {
         $start = Get-Date
-        Invoke-WebRequest -Uri $url -OutFile $destinoTmp -UseBasicParsing
+        if ($curlPath) {
+            & $curlPath --fail --location --retry 3 --retry-delay 2 --output $destinoTmp $url
+            if ($LASTEXITCODE -ne 0) { throw "curl.exe failed with exit code $LASTEXITCODE" }
+        }
+        else {
+            Invoke-WebRequest -Uri $url -OutFile $destinoTmp -UseBasicParsing
+        }
 
         if (-not (Test-Path -LiteralPath $destinoTmp)) {
             throw 'Download finished without creating a temporary file.'

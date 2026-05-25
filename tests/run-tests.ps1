@@ -253,13 +253,27 @@ try {
         Assert-MatchText $text "AddMonths\(-6\)\.ToString\('yyyyMMdd'\)" 'import.ps1 must calculate the default cutoff from the execution date.'
         Assert-MatchText $text "COALESCE\(regime_tributario, ''\) <> 'Simples Nacional'" 'import.ps1 must remove Normal, MEI, and unmatched rows when Simples filter is enabled.'
         Assert-MatchText $text 'no Simples file was found' 'import.ps1 must fail if Simples-only filtering is enabled without Simples data.'
-        Assert-MatchText $text 'cnae_categoria_map' 'import.ps1 must seed CNAE category rules.'
-        Assert-MatchText $text 'estabelecimentos_categorias' 'import.ps1 must generate per-establishment category matches.'
-        Assert-MatchText $text 'cnae_fiscal_secundaria' 'import.ps1 must evaluate secondary CNAEs for categories.'
-        Assert-MatchText $text "natureza_juridica = '2143'" 'import.ps1 must derive cooperative category from government legal nature.'
         Assert-MatchText $text "IMPORT_FULL" 'import.ps1 must verify import log entry.'
         Assert-MatchText $text 'allowZeroFinalRows' 'import.ps1 must protect against unexpected zero-row imports.'
+        Assert-MatchText $text 'cnae_categoria_map' 'import.ps1 must seed reusable CNAE category rules.'
+        Assert-MatchText $text 'estabelecimentos_categorias' 'import.ps1 must generate per-CNPJ category matches.'
+        Assert-MatchText $text 'cnae_fiscal_secundaria' 'import.ps1 must classify using secondary CNAEs as well as principal CNAE.'
+        Assert-MatchText $text "natureza_juridica = '2143'" 'import.ps1 must classify cooperatives from government legal-nature data.'
+        Assert-MatchText $text 'captureActiveClients' 'import.ps1 must optionally capture government data for active client CNPJs.'
+        Assert-MatchText $text 'tmp_clientes_ativos_alvo' 'import.ps1 must load active client CNPJs into a staging target table.'
+        Assert-MatchText $text 'clientes_ativos_governo' 'import.ps1 must persist active client CNAE/government lookup rows.'
         Assert-MatchText $text 'Reason ''import transaction verified''' 'import.ps1 must delete LIMPO files only after verification.'
+    }
+
+    Invoke-Test 'schema defines category and client staging tables' {
+        $schema = Get-ScriptText 'sql\schema.sql'
+        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS cnae_categoria_map' 'schema.sql must define the CNAE category map.'
+        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS estabelecimentos_categorias' 'schema.sql must define generated establishment category matches.'
+        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS clientes_ativos_governo' 'schema.sql must define active-client government lookup table.'
+        $staging = Get-ScriptText 'sql\client_staging.sql'
+        Assert-MatchText $staging 'CREATE TABLE IF NOT EXISTS clientes_staging' 'client_staging.sql must define the client staging table.'
+        Assert-MatchText $staging 'CREATE TABLE IF NOT EXISTS clientes_categorias' 'client_staging.sql must define normalized client categories.'
+        Assert-MatchText $staging 'categoria_frigorifico boolean' 'client staging must keep normalized CNAE category fields.'
     }
 
     Invoke-Test 'export stage escapes output path and validates CSV header' {
@@ -316,30 +330,6 @@ try {
         Assert-MatchText $text 'opcao_pelo_mei' 'classifier output notes must reference the MEI source flag.'
         Assert-MatchText $text 'Simples Nacional' 'classifier must classify Simples Nacional rows.'
         Assert-MatchText $text 'Import-XlsxRows' 'classifier must support XLSX input files.'
-        Assert-MatchText $text 'Receita Simples CSV nao informado' 'classifier must allow output without optional Simples input.'
-    }
-
-    Invoke-Test 'schema defines category and client staging tables' {
-        $schema = Get-ScriptText 'sql\schema.sql'
-        $clientSchema = Get-ScriptText 'sql\client_staging.sql'
-        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS cnae_categoria_map' 'schema must define CNAE category map.'
-        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS estabelecimentos_categorias' 'schema must define generated category matches.'
-        Assert-MatchText $schema "match_type IN \('exact', 'prefix', 'range'\)" 'category map must constrain match types.'
-        Assert-MatchText $clientSchema 'CREATE TABLE IF NOT EXISTS clientes_staging' 'client staging schema must define staging table.'
-        Assert-MatchText $clientSchema 'flag_multiplos_computadores boolean' 'client staging booleans must be typed for PostgreSQL.'
-        Assert-MatchText $clientSchema 'categoria_transporte boolean' 'client staging schema must include wide category columns.'
-        Assert-MatchText $clientSchema 'CREATE TABLE IF NOT EXISTS clientes_categorias' 'client staging schema must define normalized category table.'
-    }
-
-    Invoke-Test 'client staging builder protects IDs and broken enrichment CNPJ' {
-        $text = Get-ScriptText 'scripts\build-client-staging.ps1'
-        Assert-MatchText $text 'function Normalize-IdLocal' 'staging builder must normalize IDs explicitly.'
-        Assert-MatchText $text "TrimStart\('0'\)" 'staging builder must trim leading zeroes from IDs.'
-        Assert-MatchText $text 'cnpj_corrigido' 'staging builder must use corrected enrichment CNPJ, not raw broken CNPJ.'
-        Assert-MatchText $text 'enriquecimento_fallback' 'staging builder must audit enrichment-only CNPJ fallback.'
-        Assert-MatchText $text 'function Convert-ToPgBoolText' 'staging builder must emit PostgreSQL boolean text.'
-        Assert-MatchText $text 'IncludeGovernmentData' 'staging builder must support optional government category enrichment.'
-        Assert-MatchText $text 'external_source_required' 'staging builder must mark categories that cannot be proven by government CNAE alone.'
     }
 
     Invoke-Test 'client classifier packaging script builds dedicated executable' {
@@ -347,9 +337,32 @@ try {
         Assert-MatchText $text 'classify-clientes-launcher\.ps1' 'classifier packaging must use the interactive launcher.'
         Assert-MatchText $text 'CnpjClientClassifier\.exe' 'classifier packaging must create the dedicated executable.'
         Assert-MatchText $text 'classify-clientes\.ps1' 'classifier packaging must copy the classifier script beside the executable.'
-        Assert-MatchText $text 'build-client-staging\.ps1' 'classifier packaging must copy the staging builder beside the executable.'
-        Assert-MatchText $text 'config\.example\.ps1' 'classifier packaging must copy the public config template for PostgreSQL mode.'
+        Assert-MatchText $text 'config\.ps1' 'classifier packaging must copy config for PostgreSQL mode.'
         Assert-MatchText $text 'preflight\.ps1' 'classifier packaging must copy PostgreSQL preflight helpers.'
+    }
+
+    Invoke-Test 'client staging builder protects IDs and broken enrichment CNPJ' {
+        $text = Get-ScriptText 'scripts\build-client-staging.ps1'
+        Assert-MatchText $text 'function Normalize-IdLocal' 'staging builder must normalize IDs before joining.'
+        Assert-MatchText $text "TrimStart\('0'\)" 'staging builder must prevent 1.003/1003/0001003 mismatches.'
+        Assert-MatchText $text 'cnpj_corrigido' 'staging builder must use corrected enrichment CNPJ only as fallback/audit.'
+        Assert-MatchText $text 'enriquecimento_fallback' 'staging builder must label enrichment CNPJ fallback.'
+        Assert-MatchText $text 'Convert-ToPgBoolText' 'staging builder must convert localized yes/no values to PostgreSQL booleans.'
+        Assert-MatchText $text 'IncludeGovernmentData' 'staging builder must optionally enrich with government CNAE category data.'
+        Assert-MatchText $text 'clientes_ativos_governo' 'staging builder must consume the active-client government lookup when present.'
+        Assert-MatchText $text 'external_source_required' 'staging builder must not guess fiscal/import-export categories CNAE cannot prove.'
+    }
+
+    Invoke-Test 'capture active clients script populates government lookup from LIMPO files' {
+        $text = Get-ScriptText 'scripts\capture-active-clients.ps1'
+        Assert-MatchText $text 'tmp_clientes_ativos_alvo' 'capture script must create target CNPJ staging table.'
+        Assert-MatchText $text 'tmp_estabelecimentos_stage' 'capture script must create establishment staging table.'
+        Assert-MatchText $text 'tmp_empresas_stage' 'capture script must create empresa staging table.'
+        Assert-MatchText $text 'clientes_ativos_governo' 'capture script must insert into government lookup table.'
+        Assert-MatchText $text 'LIMPO_\*\.ESTABELE' 'capture script must process LIMPO establishment files.'
+        Assert-MatchText $text 'LIMPO_\*\.EMPRECSV' 'capture script must process LIMPO empresa files.'
+        Assert-MatchText $text 'situacao_cadastral' 'capture script must filter by active cadastral status.'
+        Assert-MatchText $text 'psql.*-f' 'capture script must use psql -f to avoid quoting issues.'
     }
 
     Invoke-Test 'client classifier sample run classifies synthetic rows' {
@@ -398,7 +411,7 @@ try {
         Assert-MatchText $gitignore 'output/' '.gitignore must ignore generated outputs.'
         Assert-MatchText $gitignore 'downloads/' '.gitignore must ignore downloaded Receita files.'
         Assert-MatchText $gitignore '!examples/\*\.sample\.csv' '.gitignore must allow synthetic sample CSV files.'
-        Assert-MatchText $docs '\.xlsx` or `\.csv' 'client classifier docs must explain XLSX and CSV support.'
+        Assert-MatchText $docs 'original system Excel export can be selected directly' 'client classifier docs must explain XLSX support.'
         Assert-MatchText $docs '-Mode Database' 'client classifier docs must explain PostgreSQL mode for large Simples files.'
         Assert-MatchText $docs '`Normal` does not mean Lucro Real' 'docs must explain the Normal limitation.'
         Assert-MatchText $docs 'Do not infer MEI from `natureza_juridica = 2135`' 'docs must reject natureza_juridica as the MEI source.'

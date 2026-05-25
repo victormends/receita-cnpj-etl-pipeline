@@ -45,6 +45,8 @@ $cleanupMode = Get-CleanupMode -Config $config
 $resetFinalTablesOnImport = -not $config.ContainsKey('resetFinalTablesOnImport') -or [bool]$config.resetFinalTablesOnImport
 $requireEnrichmentMatches = -not $config.ContainsKey('requireEnrichmentMatches') -or [bool]$config.requireEnrichmentMatches
 $filterSimplesNacional = $config.ContainsKey('filterSimplesNacional') -and [bool]$config.filterSimplesNacional
+$captureActiveClients = $config.ContainsKey('captureActiveClients') -and [bool]$config.captureActiveClients
+$activeClientsPath = if ($config.ContainsKey('activeClientsPath')) { [string]$config.activeClientsPath } else { '' }
 $effectiveDataCorte = if ($config.ContainsKey('dataCorte') -and -not [string]::IsNullOrWhiteSpace([string]$config.dataCorte)) {
     [string]$config.dataCorte
 } else {
@@ -54,6 +56,7 @@ $usedCleanFiles = @($estabelecimentos + $empresas + $simples + $municipios) | Wh
 
 Write-Host " Opening date cutoff: $effectiveDataCorte (last 6 months unless dataCorte override is set)" -ForegroundColor Gray
 Write-Host " Simples Nacional only: $filterSimplesNacional; MEI rows removed" -ForegroundColor Gray
+Write-Host " Capture active clients lookup: $captureActiveClients" -ForegroundColor Gray
 
 function Run-Sql {
     param([string]$sql, [string]$desc)
@@ -182,6 +185,31 @@ function New-CnaeKeepCondition {
     return '(' + ($clauses -join " OR ") + ')'
 }
 
+function Get-CsvDelimiterLocal {
+    param([string]$Path)
+    $header = Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 1
+    if ($header -match ';') { return ';' }
+    return ','
+}
+
+function Get-PropValueLocal {
+    param($Row, [string[]]$Names)
+    foreach ($name in $Names) {
+        $property = $Row.PSObject.Properties[$name]
+        if ($property) { return $property.Value }
+    }
+    return ''
+}
+
+function Normalize-CnpjLocal {
+    param([object]$Value)
+    if ($null -eq $Value) { return '' }
+    $digits = ([string]$Value) -replace '\D', ''
+    if ($digits.Length -eq 14) { return $digits }
+    if ($digits.Length -gt 0 -and $digits.Length -lt 14) { return $digits.PadLeft(14, '0') }
+    return ''
+}
+
 $ufsFilter = Join-SqlQuotedList -Values @($config.ufs) -Name 'ufs'
 $municipioFilterSql = ''
 if ($config.ContainsKey('municipiosWhitelist') -and @($config.municipiosWhitelist).Count -gt 0) {
@@ -237,9 +265,41 @@ CREATE UNLOGGED TABLE tmp_municipios (codigo VARCHAR(4), nome TEXT);
 
 DROP TABLE IF EXISTS tmp_cnpj_basico_alvo CASCADE;
 CREATE UNLOGGED TABLE tmp_cnpj_basico_alvo (cnpj_basico VARCHAR(8) PRIMARY KEY);
+
+DROP TABLE IF EXISTS tmp_clientes_ativos_alvo CASCADE;
+CREATE UNLOGGED TABLE tmp_clientes_ativos_alvo (cnpj VARCHAR(14) PRIMARY KEY, cnpj_basico VARCHAR(8));
 "@
 $resetDescription = if ($resetFinalTablesOnImport) { 'Reset final tables and create staging tables' } else { 'Drop/Create staging tables' }
 Run-Sql $sqlTemp $resetDescription
+
+if ($captureActiveClients) {
+    if ([string]::IsNullOrWhiteSpace($activeClientsPath) -or -not (Test-Path -LiteralPath $activeClientsPath -PathType Leaf)) {
+        Write-Host "    [WARN] Active clients file not found; lookup capture skipped: $activeClientsPath" -ForegroundColor Yellow
+        $captureActiveClients = $false
+    }
+    else {
+        Write-Host "`n[1b/7] Loading active-client CNPJ target list..." -ForegroundColor Yellow
+        $delimiter = Get-CsvDelimiterLocal -Path $activeClientsPath
+        $activeRows = @(Import-Csv -LiteralPath $activeClientsPath -Delimiter $delimiter -Encoding UTF8)
+        $targetPath = Join-Path $config.dirTemp 'clientes_ativos_alvo.csv'
+        $activeTargets = foreach ($row in $activeRows) {
+            $cnpj = Normalize-CnpjLocal -Value (Get-PropValueLocal -Row $row -Names @('cnpj_normalizado', 'cnpj', 'CNPJ', 'cnpj_corrigido'))
+            if ($cnpj -match '^\d{14}$') { [pscustomobject]@{ cnpj = $cnpj; cnpj_basico = $cnpj.Substring(0, 8) } }
+        }
+        $activeTargets = @($activeTargets | Sort-Object cnpj -Unique)
+        if ($activeTargets.Count -eq 0) {
+            Write-Host '    [WARN] Active clients file had no valid CNPJs; lookup capture skipped.' -ForegroundColor Yellow
+            $captureActiveClients = $false
+        }
+        else {
+            $activeTargets | Export-Csv -LiteralPath $targetPath -Delimiter ';' -Encoding UTF8 -NoTypeInformation
+            Run-Sql "COPY tmp_clientes_ativos_alvo FROM '$(ConvertTo-PsqlPathLiteral -Path $targetPath)' WITH (FORMAT CSV, HEADER TRUE, DELIMITER ';', ENCODING 'UTF8', NULL ''); CREATE INDEX IF NOT EXISTS idx_tmp_clientes_ativos_alvo_basico ON tmp_clientes_ativos_alvo(cnpj_basico); ANALYZE tmp_clientes_ativos_alvo; TRUNCATE TABLE clientes_ativos_governo;" "Load active client targets ($($activeTargets.Count) CNPJs)"
+            $loadedActiveTargets = Run-SqlQuery "SELECT COUNT(*) FROM tmp_clientes_ativos_alvo;" 'Verify active client target load'
+            Write-Host "    Active client CNPJ targets loaded: $loadedActiveTargets" -ForegroundColor Gray
+            Remove-CnpjArtifactSafe -Config $config -Path $targetPath -AllowedRoot $config.dirTemp -AllowedPatterns @('clientes_ativos_alvo.csv') -Reason 'active client target load complete' | Out-Null
+        }
+    }
+}
 
 if ($municipios) {
     Write-Host "`n[2/7] Loading municipality lookup..." -ForegroundColor Yellow
@@ -261,6 +321,40 @@ TRUNCATE tmp_estabelecimentos_stage;
 $(New-CopyFromFileSql -TableName 'tmp_estabelecimentos_stage' -Path $f)
 "@
     Run-Sql $sqlCopyEstabelecimentos "COPY Estabelecimentos $estIndex/$($estabelecimentos.Count): $leaf"
+
+    if ($captureActiveClients) {
+        $sqlCaptureActiveEstabelecimentos = @"
+INSERT INTO clientes_ativos_governo (
+    cnpj, cnpj_basico, nome_fantasia, situacao_cadastral, data_inicio_atividade,
+    cnae_fiscal_principal, cnae_fiscal_secundaria, uf, municipio, atualizado_em
+)
+SELECT
+    LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0') || LPAD(regexp_replace(t.cnpj_ordem, '\D', '', 'g'), 4, '0') || LPAD(regexp_replace(t.cnpj_dv, '\D', '', 'g'), 2, '0') AS cnpj,
+    LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0') AS cnpj_basico,
+    NULLIF(t.nome_fantasia, '') AS nome_fantasia,
+    t.situacao_cadastral,
+    t.data_inicio_atividade,
+    t.cnae_fiscal_principal,
+    t.cnae_fiscal_secundaria,
+    t.uf,
+    t.municipio,
+    NOW()
+FROM tmp_estabelecimentos_stage t
+JOIN tmp_clientes_ativos_alvo a ON a.cnpj = LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0') || LPAD(regexp_replace(t.cnpj_ordem, '\D', '', 'g'), 4, '0') || LPAD(regexp_replace(t.cnpj_dv, '\D', '', 'g'), 2, '0')
+WHERE t.situacao_cadastral = '02'
+ON CONFLICT (cnpj) DO UPDATE SET
+    cnpj_basico = EXCLUDED.cnpj_basico,
+    nome_fantasia = EXCLUDED.nome_fantasia,
+    situacao_cadastral = EXCLUDED.situacao_cadastral,
+    data_inicio_atividade = EXCLUDED.data_inicio_atividade,
+    cnae_fiscal_principal = EXCLUDED.cnae_fiscal_principal,
+    cnae_fiscal_secundaria = EXCLUDED.cnae_fiscal_secundaria,
+    uf = EXCLUDED.uf,
+    municipio = EXCLUDED.municipio,
+    atualizado_em = NOW();
+"@
+        Run-Sql $sqlCaptureActiveEstabelecimentos "Capture active-client establishments from $leaf"
+    }
 
 $sqlInsertEstabelecimentos = @"
 WITH upserted AS (
@@ -386,6 +480,30 @@ ON CONFLICT (cnpj_basico) DO UPDATE SET
     porte_empresa = EXCLUDED.porte_empresa;
 "@
     Run-Sql $sqlUpsertEmpresas "Apply Empresas enrichment from $leaf"
+
+    if ($captureActiveClients) {
+        $sqlUpdateActiveClientsEmpresas = @"
+WITH normalized AS (
+    SELECT
+        LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0') AS cnpj_basico,
+        t.razao_social,
+        regexp_replace(t.natureza_juridica, '\D', '', 'g') AS natureza_juridica,
+        t.capital_social,
+        t.porte_empresa
+    FROM tmp_empresas_stage t
+)
+UPDATE clientes_ativos_governo c
+SET razao_social = n.razao_social,
+    natureza_juridica = n.natureza_juridica,
+    capital_social = n.capital_social,
+    porte_empresa = n.porte_empresa,
+    atualizado_em = NOW()
+FROM normalized n
+WHERE c.cnpj_basico = n.cnpj_basico
+  AND n.cnpj_basico ~ '^\d{8}$';
+"@
+        Run-Sql $sqlUpdateActiveClientsEmpresas "Apply Empresas enrichment to active clients from $leaf"
+    }
 }
 
 $empresaMatches = [int](Run-SqlQuery "SELECT COUNT(*) FROM empresas_dados;" 'Verify Empresas enrichment matches')

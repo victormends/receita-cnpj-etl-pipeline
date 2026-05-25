@@ -60,7 +60,7 @@ Copy-Item -LiteralPath $classifierScript -Destination (Join-Path $resolvedOutput
 if (Test-Path -LiteralPath $stagingBuilderScript -PathType Leaf) {
     Copy-Item -LiteralPath $stagingBuilderScript -Destination (Join-Path $resolvedOutputDir 'build-client-staging.ps1') -Force
 }
-Copy-Item -LiteralPath $configTemplate -Destination (Join-Path $resolvedOutputDir 'config.example.ps1') -Force
+Copy-Item -LiteralPath $configTemplate -Destination (Join-Path $resolvedOutputDir 'config.ps1') -Force
 
 $libOutputDir = Join-Path $resolvedOutputDir 'lib'
 if (-not (Test-Path -LiteralPath $libOutputDir)) {
