@@ -14,8 +14,8 @@
     # ---------------------------------------------------------
     baseUrl      = "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos"
     dirDownload  = "$env:USERPROFILE\Downloads\cnpj"  # Where ZIP files are downloaded
-    dirTemp      = "C:\Postgres17\data\temp"          # Working directory for extraction and cleaning
-    dirOut       = "C:\Postgres17\data\output"        # Final CSV export directory
+    dirTemp      = "$env:USERPROFILE\cnpj-etl\temp"   # Working directory for extraction and cleaning
+    dirOut       = "$env:USERPROFILE\cnpj-etl\output" # Final CSV export directory
 
     # ---------------------------------------------------------
     # CLEANUP AND RUNTIME SAFETY
@@ -34,19 +34,14 @@
     requireEnrichmentMatches = $true   # Fail import if Empresas/Simples files exist but match zero target CNPJs.
     filterSimplesNacional    = $true   # Keep only rows enriched as Simples Nacional. MEI rows are removed.
     captureActiveClients     = $true   # Also save government CNAE data for the existing active-client list below.
-    activeClientsPath        = "$env:USERPROFILE\Downloads\clientes_classificados.csv" # CSV with CNPJ/cnpj_normalizado for active clients.
+    activeClientsPath        = ".\examples\active-clients.sample.csv" # CSV with CNPJ/cnpj_normalizado for sample active clients.
     
     # ---------------------------------------------------------
     # IMPORT FILTERS
     # ---------------------------------------------------------
     dataCorte    = ""                 # Optional override. Empty = opened in the last 6 months from execution date.
     ufs          = @("PR", "SC")      # Target states (example: "PR", "SC", "SP")
-    municipiosWhitelist = @(           # Receita municipality codes to keep. Empty array keeps all municipalities.
-        "7937", "7533", "8267", "8073", "7567", "8239", "8209", "8319", "7785", "7753",
-        "7887", "8155", "7671", "7807", "7755", "7435", "7443", "7481", "7477", "7821",
-        "8199", "7823", "9971", "8203", "8217", "8359", "7455", "7817",
-        "7423", "0896", "8057", "5553", "8191"
-    )
+    municipiosWhitelist = @()          # Receita municipality codes to keep. Empty array keeps all municipalities.
     
     # CNAE filter (main code prefix)
     # Companies starting with any of these prefixes will be KEPT:

@@ -53,16 +53,15 @@ function Resolve-OptionalFileLocal {
 
 function Resolve-DefaultEnrichmentPath {
     $candidates = @(
-        (Join-Path $scriptRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
-        (Join-Path $projectRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
-        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\Clientes_A_limpo_cnpj_corrigido.csv')
+        (Join-Path $scriptRoot 'data\operational-enrichment.csv'),
+        (Join-Path $projectRoot 'data\operational-enrichment.csv')
     )
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
 
-    throw 'Enrichment CSV was not provided and the default Clientes_A_limpo_cnpj_corrigido.csv was not found beside the executable, in project data, or in Downloads.'
+    throw 'Enrichment CSV was not provided and the default operational-enrichment.csv was not found beside the executable or in project data.'
 }
 
 function Normalize-DigitsLocal {
@@ -146,16 +145,15 @@ function Export-GovernmentCategories {
     param([string]$Path)
 
     $psqlCandidates = @(
-        'D:\Postgres\bin\psql.exe',
-        'C:\Postgres17\bin\psql.exe',
-        'C:\Postgres16\bin\psql.exe',
+        'C:\Program Files\PostgreSQL\17\bin\psql.exe',
+        'C:\Program Files\PostgreSQL\16\bin\psql.exe',
         'psql.exe'
     )
     $psqlPath = $psqlCandidates | Where-Object { (Get-Command $_ -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
     if (-not $psqlPath) { throw 'psql.exe was not found. Cannot export government CNAE data.' }
 
     $hostCandidates = @('localhost', '127.0.0.1')
-    $portCandidates = @($env:CNPJ_ETL_DB_PORT, $env:PGPORT, '5253', '5432') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+    $portCandidates = @($env:CNPJ_ETL_DB_PORT, $env:PGPORT, '5432') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
     $dbName = if ($env:CNPJ_ETL_DB_NAME) { $env:CNPJ_ETL_DB_NAME } else { 'postgres' }
     $dbUser = if ($env:CNPJ_ETL_DB_USER) { $env:CNPJ_ETL_DB_USER } elseif ($env:PGUSER) { $env:PGUSER } else { 'postgres' }
 
@@ -216,7 +214,7 @@ COPY (
             cnae_fiscal_principal,
             cnae_fiscal_secundaria,
             natureza_juridica
-        FROM clientes_ativos_governo
+        FROM active_clients_public_enrichment
     ),
     cnaes AS (
         SELECT cnpj, NULLIF(regexp_replace(COALESCE(cnae_fiscal_principal, ''), '[^0-9]', '', 'g'), '') AS cnae, 'principal' AS cnae_origem

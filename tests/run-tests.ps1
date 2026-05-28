@@ -260,8 +260,8 @@ try {
         Assert-MatchText $text 'cnae_fiscal_secundaria' 'import.ps1 must classify using secondary CNAEs as well as principal CNAE.'
         Assert-MatchText $text "natureza_juridica = '2143'" 'import.ps1 must classify cooperatives from government legal-nature data.'
         Assert-MatchText $text 'captureActiveClients' 'import.ps1 must optionally capture government data for active client CNPJs.'
-        Assert-MatchText $text 'tmp_clientes_ativos_alvo' 'import.ps1 must load active client CNPJs into a staging target table.'
-        Assert-MatchText $text 'clientes_ativos_governo' 'import.ps1 must persist active client CNAE/government lookup rows.'
+        Assert-MatchText $text 'tmp_active_client_targets' 'import.ps1 must load active client CNPJs into a staging target table.'
+        Assert-MatchText $text 'active_clients_public_enrichment' 'import.ps1 must persist active client CNAE/government lookup rows.'
         Assert-MatchText $text 'Reason ''import transaction verified''' 'import.ps1 must delete LIMPO files only after verification.'
     }
 
@@ -269,7 +269,7 @@ try {
         $schema = Get-ScriptText 'sql\schema.sql'
         Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS cnae_categoria_map' 'schema.sql must define the CNAE category map.'
         Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS estabelecimentos_categorias' 'schema.sql must define generated establishment category matches.'
-        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS clientes_ativos_governo' 'schema.sql must define active-client government lookup table.'
+        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS active_clients_public_enrichment' 'schema.sql must define active-client government lookup table.'
         $staging = Get-ScriptText 'sql\client_staging.sql'
         Assert-MatchText $staging 'CREATE TABLE IF NOT EXISTS clientes_staging' 'client_staging.sql must define the client staging table.'
         Assert-MatchText $staging 'CREATE TABLE IF NOT EXISTS clientes_categorias' 'client_staging.sql must define normalized client categories.'
@@ -349,16 +349,16 @@ try {
         Assert-MatchText $text 'enriquecimento_fallback' 'staging builder must label enrichment CNPJ fallback.'
         Assert-MatchText $text 'Convert-ToPgBoolText' 'staging builder must convert localized yes/no values to PostgreSQL booleans.'
         Assert-MatchText $text 'IncludeGovernmentData' 'staging builder must optionally enrich with government CNAE category data.'
-        Assert-MatchText $text 'clientes_ativos_governo' 'staging builder must consume the active-client government lookup when present.'
+        Assert-MatchText $text 'active_clients_public_enrichment' 'staging builder must consume the active-client government lookup when present.'
         Assert-MatchText $text 'external_source_required' 'staging builder must not guess fiscal/import-export categories CNAE cannot prove.'
     }
 
     Invoke-Test 'capture active clients script populates government lookup from LIMPO files' {
         $text = Get-ScriptText 'scripts\capture-active-clients.ps1'
-        Assert-MatchText $text 'tmp_clientes_ativos_alvo' 'capture script must create target CNPJ staging table.'
+        Assert-MatchText $text 'tmp_active_client_targets' 'capture script must create target CNPJ staging table.'
         Assert-MatchText $text 'tmp_estabelecimentos_stage' 'capture script must create establishment staging table.'
         Assert-MatchText $text 'tmp_empresas_stage' 'capture script must create empresa staging table.'
-        Assert-MatchText $text 'clientes_ativos_governo' 'capture script must insert into government lookup table.'
+        Assert-MatchText $text 'active_clients_public_enrichment' 'capture script must insert into government lookup table.'
         Assert-MatchText $text 'LIMPO_\*\.ESTABELE' 'capture script must process LIMPO establishment files.'
         Assert-MatchText $text 'LIMPO_\*\.EMPRECSV' 'capture script must process LIMPO empresa files.'
         Assert-MatchText $text 'situacao_cadastral' 'capture script must filter by active cadastral status.'

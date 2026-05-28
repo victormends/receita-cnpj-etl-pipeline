@@ -199,7 +199,13 @@ function Resolve-PortableWorkingDirectories {
         $resolved[$entry.Key] = $entry.Value
     }
 
-    $postgresRoots = @('C:\Postgres17', 'D:\Postgres17', 'C:\Postgres16', 'D:\Postgres16')
+    $postgresRoots = @(
+        'C:\Program Files\PostgreSQL',
+        'C:\Program Files (x86)\PostgreSQL',
+        'C:\PostgreSQL',
+        'D:\PostgreSQL',
+        (Join-Path $env:USERPROFILE 'PostgreSQL')
+    )
     $availablePostgresRoot = $postgresRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
 
     foreach ($key in @('dirTemp', 'dirOut')) {
@@ -487,22 +493,21 @@ function Get-PostgresPrefixCandidates {
     }
 
     foreach ($path in @(
-        'D:\Postgres17',
-        'C:\Postgres17',
-        'D:\Postgres16',
-        'C:\Postgres16',
-        'D:\Postgres15',
-        'C:\Postgres15',
         'C:\Program Files\PostgreSQL',
         'C:\Program Files (x86)\PostgreSQL',
         'C:\PostgreSQL',
-        'D:\PostgreSQL'
+        'D:\PostgreSQL',
+        (Join-Path $env:USERPROFILE 'PostgreSQL')
     )) {
         Add-PrefixCandidate -Path $path
     }
 
     foreach ($install in (Get-PostgresRegistryInstallations)) {
         Add-PrefixCandidate -Path $install.BaseDirectory
+    }
+
+    foreach ($envName in @('CNPJ_ETL_POSTGRES_ROOT', 'POSTGRES_HOME', 'PGHOME')) {
+        Add-PrefixCandidate -Path ([Environment]::GetEnvironmentVariable($envName))
     }
 
     return $prefixes.ToArray()
@@ -561,9 +566,10 @@ function Resolve-PostgresTooling {
         }
     }
 
-    foreach ($prefix in @('D:\Postgres17', 'C:\Postgres17')) {
-        if (Test-Path $prefix) {
-            $preferredPrefixes.Add($prefix)
+    foreach ($envName in @('CNPJ_ETL_POSTGRES_ROOT', 'POSTGRES_HOME', 'PGHOME')) {
+        $prefix = [Environment]::GetEnvironmentVariable($envName)
+        if (-not [string]::IsNullOrWhiteSpace($prefix) -and (Test-Path $prefix)) {
+            $preferredPrefixes.Add($prefix.TrimEnd('\'))
         }
     }
 
@@ -582,9 +588,6 @@ function Resolve-PostgresTooling {
     $prefix = if ($psqlPath) { Split-Path -Parent (Split-Path -Parent $psqlPath) } else { $null }
     $serviceName = if ($matchedInstall -and $matchedInstall.Service) {
         $matchedInstall.Service
-    }
-    elseif ($prefix -and $prefix -match '[CD]:\\Postgres17$') {
-        'postgresql-17'
     }
     else {
         $null
@@ -768,10 +771,6 @@ function Get-PostgresPortCandidates {
         Add-PortCandidate -Value $Tooling.RegistryInstall.Port
     }
 
-    if ($Tooling.Prefix -and $Tooling.Prefix -match '[CD]:\\Postgres17$') {
-        Add-PortCandidate -Value '5253'
-    }
-
     $postgresProcesses = Get-Process postgres -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id
     foreach ($processId in $postgresProcesses) {
         foreach ($conn in (Get-NetTCPConnection -State Listen -OwningProcess $processId -ErrorAction SilentlyContinue)) {
@@ -779,7 +778,6 @@ function Get-PostgresPortCandidates {
         }
     }
 
-    Add-PortCandidate -Value '5253'
     Add-PortCandidate -Value '5432'
 
     return $ports.ToArray()
@@ -792,10 +790,7 @@ function Resolve-DatabaseRuntimeConfig {
     )
 
     $resolvedHost = Get-EnvConfigValue -Names @('CNPJ_ETL_DB_HOST', 'PGHOST') -Default $Config['dbHost']
-    if ($Tooling.Prefix -and $Tooling.Prefix -match '[CD]:\\Postgres17$' -and ($resolvedHost -eq 'localhost' -or [string]::IsNullOrWhiteSpace($resolvedHost))) {
-        $resolvedHost = '127.0.0.1'
-    }
-    elseif ([string]::IsNullOrWhiteSpace($resolvedHost)) {
+    if ([string]::IsNullOrWhiteSpace($resolvedHost)) {
         $resolvedHost = '127.0.0.1'
     }
     $Config['dbHost'] = $resolvedHost
@@ -816,7 +811,7 @@ function Resolve-DatabaseRuntimeConfig {
 
     $portCandidates = Get-PostgresPortCandidates -Config $Config -Tooling $Tooling
     if ($portCandidates.Count -eq 0) {
-        $portCandidates = @('5253', '5432')
+        $portCandidates = @('5432')
     }
 
     $errors = New-Object System.Collections.Generic.List[string]

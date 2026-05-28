@@ -2,7 +2,7 @@
 
 Windows-first PowerShell ETL pipeline for Receita Federal CNPJ open data using PostgreSQL.
 
-The project downloads public CNPJ datasets, prepares the raw files for import, loads them into PostgreSQL, applies configurable filters, enriches the result with supporting tables, and exports a filtered CSV for downstream analysis or operational workflows.
+The project downloads public CNPJ datasets, prepares the raw files for import, loads them into PostgreSQL, applies configurable filters, enriches the result with supporting tables, and exports a filtered CSV for downstream analysis or sample workflows.
 
 ## What It Does
 
@@ -15,7 +15,7 @@ The project downloads public CNPJ datasets, prepares the raw files for import, l
 - Generates government-data business category matches from CNAE/legal nature for filtered establishments.
 - Exports the filtered establishments to CSV.
 - Classifies existing client lists from `.xlsx` or `.csv` as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using Receita's Simples dataset.
-- Builds PostgreSQL-ready existing-client staging CSVs by combining a base client file, optional cleaned operational enrichment, optional Simples data, and optional government CNAE categories.
+- Builds PostgreSQL-ready sample client staging CSVs by combining a base client file, optional cleaned enrichment, optional Simples data, and optional government CNAE categories.
 - Includes tests for pipeline safety checks and script behavior.
 
 ## Pipeline Architecture
@@ -110,9 +110,9 @@ If `config.ps1` is missing, the pipeline exits with instructions to copy `config
 
 The pipeline can skip stages when validated downstream artifacts already exist. Cleanup behavior is controlled by `cleanupMode` and `cleanupDryRun` in `config.ps1`.
 
-## Existing Client Classification
+## Sample Client Classification
 
-Use `scripts/classify-clientes.ps1` when you already have a client export and only need to classify tax-regime status from Receita's Simples dataset.
+Use `scripts/classify-clientes.ps1` when you already have a sample client export and only need to classify tax-regime status from Receita's Simples dataset.
 
 Supported client inputs:
 
@@ -160,9 +160,9 @@ If `-SimplesPath` is omitted, the script still writes the output and leaves vali
 
 See `docs/client-classifier.md` for detailed usage, PostgreSQL requirements, packaging, and troubleshooting.
 
-## Existing Client Staging CSV
+## Sample Client Staging CSV
 
-Use `scripts/build-client-staging.ps1` when you need a PostgreSQL-friendly CSV that keeps the base client spreadsheet as the row source and adds cleaned operational fields.
+Use `scripts/build-client-staging.ps1` when you need a PostgreSQL-friendly CSV that keeps the base sample client spreadsheet as the row source and adds cleaned enrichment fields.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-client-staging.ps1 `
@@ -173,7 +173,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-client-staging.ps1 `
   -IncludeGovernmentData
 ```
 
-`-EnrichmentPath` and `-SimplesPath` are optional. If enrichment is omitted, the script looks for `data\operational-enrichment.csv` beside the executable/project and then in Downloads. This repository does not include that CSV.
+`-EnrichmentPath` and `-SimplesPath` are optional. If enrichment is omitted, the script looks for `data\operational-enrichment.csv` beside the executable/project. This repository does not include that CSV.
 
 The staging builder normalizes IDs by removing non-digits and trimming leading zeroes, so `1.003`, `1003`, and `0001003` join as the same ID. The base input CNPJ is authoritative; enrichment `cnpj_corrigido` is only a fallback/audit source.
 
@@ -208,7 +208,7 @@ Do not commit:
 - `config.ps1`
 - `.env` files
 - Generated CSV exports
-- Client `.xlsx` or `.csv` exports
+- Private `.xlsx` or `.csv` exports
 - Raw Receita Federal ZIP archives or extracted files
 - PostgreSQL dumps or backups
 - Certificates, private keys, PFX/P12 files, or PEM files
@@ -219,7 +219,7 @@ See `SECURITY.md` for the public release policy.
 ## What Is Not Included
 
 - No generated CSV output
-- No client spreadsheets or private client exports
+- No private spreadsheets or private exports
 - No raw Receita Federal data archives
 - No extracted or cleaned working files
 - No database dumps

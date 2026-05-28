@@ -6,13 +6,13 @@ The script reuses the current classifier, then enriches its output with operatio
 
 ## Inputs
 
-- Base client XLSX/CSV with `ID` and `CNPJ`, for example `clientes (shared) Table.xlsx`.
+- Base client XLSX/CSV with `ID` and `CNPJ`, for example `clients.sample.xlsx`.
 - Optional Receita Simples CSV, same as the existing classifier uses.
-- Optional enrichment CSV, for example `Clientes_A_limpo_cnpj_corrigido.csv`.
+- Optional enrichment CSV, for example `operational-enrichment.csv`.
 
 The base file is authoritative for the final row set and CNPJ. The enrichment file is supplemental.
 
-If `-EnrichmentPath` is omitted, the script searches for `data\Clientes_A_limpo_cnpj_corrigido.csv` beside the executable/project and then in Downloads. If `-SimplesPath` is omitted, the output is still generated and regime fields are marked as not classified.
+If `-EnrichmentPath` is omitted, the script searches for `data\operational-enrichment.csv` beside the executable/project. If `-SimplesPath` is omitted, the output is still generated and regime fields are marked as not classified.
 
 ## CNPJ Safety
 
@@ -41,12 +41,12 @@ This makes `1.003`, `1003`, and `0001003` match as `1003`.
 
 When `-IncludeGovernmentData` is set, the script exports category columns from PostgreSQL tables populated by the ETL import:
 
-- `clientes_ativos_governo`
+- `active_clients_public_enrichment`
 - `estabelecimentos_crm`
 - `estabelecimentos_categorias`
 - `empresas_dados`
 
-`clientes_ativos_governo` is populated by `import.ps1` when `captureActiveClients = $true` and `activeClientsPath` points to the active-client CSV. It stores CNAE/company data for the active CNPJs before cleanup, without applying the CRM lead filters.
+`active_clients_public_enrichment` is populated by `import.ps1` when `captureActiveClients = $true` and `activeClientsPath` points to the active-client CSV. It stores public CNAE/company data for the provided CNPJs before cleanup, without applying the lead filters.
 
 The category layer uses only Receita/government data. It does not infer internet provider, system version, or operational state from government data.
 
@@ -74,7 +74,7 @@ The output marks import/export and special fiscal benefit categories as `externa
 ```powershell
 .\scripts\build-client-staging.ps1 `
   -InputPath '.\data\clientes.xlsx' `
-  -EnrichmentPath '.\data\Clientes_A_limpo_cnpj_corrigido.csv' `
+  -EnrichmentPath '.\data\operational-enrichment.csv' `
   -SimplesPath '.\data\F.K03200$W.SIMPLES.CSV' `
   -OutputPath '.\output\clientes_postgres_staging.csv' `
   -IncludeGovernmentData

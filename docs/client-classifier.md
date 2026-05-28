@@ -1,18 +1,18 @@
-# Existing Client Classifier
+# Sample Client Classifier
 
-`scripts/classify-clientes.ps1` classifies an existing client list as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using the Receita Federal Simples dataset.
+`scripts/classify-clientes.ps1` classifies a sample client list as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using the Receita Federal Simples dataset.
 
-This tool is separate from the CRM lead export. The lead export is filtered for prospecting and can intentionally remove MEI or Normal companies, so it is not a reliable source for classifying an existing customer base.
+This tool is separate from the lead export. The lead export is filtered for prospecting and can intentionally remove MEI or Normal companies, so it is not a reliable source for classifying a separate client list.
 
 ## When To Use It
 
-Use this classifier when you already have a client export with CNPJs and only need the MEI/Simples/Normal status.
+Use this classifier when you already have a sample client export with CNPJs and only need the MEI/Simples/Normal status.
 
 You only need the Receita `SIMPLES.CSV` file for this classification. You do not need the full Estabelecimentos dataset unless you also need address, CNAE, active/inactive status, or lead-generation filters.
 
 ## Input
 
-Use an `.xlsx` or `.csv` file with a `CNPJ` column. The column name can be changed with `-CnpjColumn`.
+Use an `.xlsx` or `.csv` file with a `CNPJ` column. The column name can be changed with `-CnpjColumn`, and the original system Excel export can be selected directly when it is kept outside the repository.
 
 Small sample run:
 

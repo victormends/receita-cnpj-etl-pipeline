@@ -1,6 +1,6 @@
 # =============================================================
 # scripts/capture-active-clients.ps1
-# Populate clientes_ativos_governo from existing LIMPO_ files
+# Populate active_clients_public_enrichment from existing LIMPO_ files
 # without running the full ETL import pipeline.
 #
 # Usage:
@@ -17,10 +17,10 @@ param(
     [string]$ActiveClientsPath = '',
     [string]$DirTemp = '',
     [string]$DbHost = 'localhost',
-    [string]$DbPort = '5253',
+    [string]$DbPort = '5432',
     [string]$DbName = 'postgres',
-    [string]$DbUser = 'pedroso',
-    [string]$PsqlExe = 'D:\Postgres\bin\psql.exe'
+    [string]$DbUser = 'postgres',
+    [string]$PsqlExe = 'psql.exe'
 )
 
 Set-StrictMode -Version Latest
@@ -34,7 +34,7 @@ if (Test-Path -LiteralPath $configPath -PathType Leaf) {
     $config = @{}
     . $configPath
     if ($config.ContainsKey('dbHost'))   { if (-not $DbHost -or $DbHost -eq 'localhost') { $DbHost = [string]$config.dbHost } }
-    if ($config.ContainsKey('dbPort'))   { if ($DbPort -eq '5253') { $DbPort = [string]$config.dbPort } }
+    if ($config.ContainsKey('dbPort'))   { if ($DbPort -eq '5432') { $DbPort = [string]$config.dbPort } }
     if ($config.ContainsKey('dbName'))   { if (-not $DbName -or $DbName -eq 'postgres') { $DbName = [string]$config.dbName } }
     if ($config.ContainsKey('dbUser'))   { if (-not $DbUser) { $DbUser = [string]$config.dbUser } }
     if ($config.ContainsKey('dbPassword') -and -not [string]::IsNullOrWhiteSpace([string]$config.dbPassword)) {
@@ -52,9 +52,9 @@ if ([string]::IsNullOrWhiteSpace($env:PGPASSWORD) -and $env:CNPJ_ETL_DB_PASSWORD
 }
 
 # --- Defaults ---
-if (-not $DirTemp) { $DirTemp = 'C:\Postgres17\data\temp' }
+if (-not $DirTemp) { $DirTemp = Join-Path $env:TEMP 'cnpj-etl-temp' }
 if (-not $ActiveClientsPath) {
-    $ActiveClientsPath = Join-Path $env:USERPROFILE 'Downloads\clientes_classificados.csv'
+    $ActiveClientsPath = Join-Path $ProjectRoot 'examples\active-clients.sample.csv'
 }
 if (-not (Test-Path -LiteralPath $PsqlExe -PathType Leaf)) {
     $found = Get-Command 'psql.exe' -ErrorAction SilentlyContinue
@@ -62,7 +62,7 @@ if (-not (Test-Path -LiteralPath $PsqlExe -PathType Leaf)) {
 }
 
 Write-Host '======================================================' -ForegroundColor Cyan
-Write-Host '  CAPTURE ACTIVE CLIENTS - populate clientes_ativos_governo' -ForegroundColor Cyan
+Write-Host '  CAPTURE ACTIVE CLIENTS - populate active_clients_public_enrichment' -ForegroundColor Cyan
 Write-Host '======================================================' -ForegroundColor Cyan
 Write-Host "  DB      : ${DbHost}:${DbPort} / $DbName / user=$DbUser" -ForegroundColor Gray
 Write-Host "  Temp dir: $DirTemp" -ForegroundColor Gray
@@ -110,7 +110,7 @@ $header = Get-Content -LiteralPath $ActiveClientsPath -Encoding UTF8 -TotalCount
 $delim = if ($header -match ';') { ';' } else { ',' }
 $activeRows = @(Import-Csv -LiteralPath $ActiveClientsPath -Delimiter $delim -Encoding UTF8)
 
-$targetCsv = Join-Path $DirTemp 'clientes_ativos_alvo_capture.csv'
+$targetCsv = Join-Path $DirTemp 'active_client_targets_capture.csv'
 $targetRows = foreach ($row in $activeRows) {
     $raw = ''
     foreach ($field in @('cnpj_normalizado','cnpj','CNPJ','cnpj_corrigido')) {
@@ -131,16 +131,16 @@ Write-Host "  Loaded $($targetRows.Count) unique CNPJ targets." -ForegroundColor
 $targetPsqlPath = To-PsqlPath $targetCsv
 
 $setupSql = @"
-DROP TABLE IF EXISTS tmp_clientes_ativos_alvo CASCADE;
-CREATE UNLOGGED TABLE tmp_clientes_ativos_alvo (
+DROP TABLE IF EXISTS tmp_active_client_targets CASCADE;
+CREATE UNLOGGED TABLE tmp_active_client_targets (
     cnpj VARCHAR(14) PRIMARY KEY,
     cnpj_basico VARCHAR(8)
 );
-COPY tmp_clientes_ativos_alvo FROM '$targetPsqlPath'
+COPY tmp_active_client_targets FROM '$targetPsqlPath'
     WITH (FORMAT CSV, HEADER TRUE, DELIMITER ';', ENCODING 'UTF8', NULL '');
-CREATE INDEX IF NOT EXISTS idx_tmp_clientes_ativos_alvo_basico ON tmp_clientes_ativos_alvo(cnpj_basico);
-ANALYZE tmp_clientes_ativos_alvo;
-TRUNCATE TABLE clientes_ativos_governo;
+CREATE INDEX IF NOT EXISTS idx_tmp_active_client_targets_basico ON tmp_active_client_targets(cnpj_basico);
+ANALYZE tmp_active_client_targets;
+TRUNCATE TABLE active_clients_public_enrichment;
 
 DROP TABLE IF EXISTS tmp_estabelecimentos_stage CASCADE;
 CREATE UNLOGGED TABLE tmp_estabelecimentos_stage (
@@ -183,7 +183,7 @@ COPY tmp_estabelecimentos_stage
 FROM '$fPsql'
 WITH (FORMAT CSV, DELIMITER ';', NULL '', ENCODING 'LATIN1');
 
-INSERT INTO clientes_ativos_governo (
+INSERT INTO active_clients_public_enrichment (
     cnpj, cnpj_basico, nome_fantasia, situacao_cadastral,
     data_inicio_atividade, cnae_fiscal_principal, cnae_fiscal_secundaria,
     uf, municipio, atualizado_em
@@ -202,7 +202,7 @@ SELECT
     t.municipio,
     NOW()
 FROM tmp_estabelecimentos_stage t
-JOIN tmp_clientes_ativos_alvo a
+JOIN tmp_active_client_targets a
   ON a.cnpj = LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0')
            || LPAD(regexp_replace(t.cnpj_ordem,   '\D', '', 'g'), 4, '0')
            || LPAD(regexp_replace(t.cnpj_dv,      '\D', '', 'g'), 2, '0')
@@ -221,7 +221,7 @@ ON CONFLICT (cnpj) DO UPDATE SET
     Run-PsqlFile $sql "ESTABELE $estIdx/$($estabelecimentos.Count): $leaf"
 }
 
-$afterEst = Run-PsqlQuery "SELECT COUNT(*) FROM clientes_ativos_governo;" "Count after ESTABELE pass"
+$afterEst = Run-PsqlQuery "SELECT COUNT(*) FROM active_clients_public_enrichment;" "Count after ESTABELE pass"
 Write-Host "  Captured so far: $afterEst rows" -ForegroundColor Gray
 
 # --- Step 3: Enrich with Empresas (razao_social, natureza_juridica, etc.) ---
@@ -247,7 +247,7 @@ WITH normalized AS (
         t.porte_empresa
     FROM tmp_empresas_stage t
 )
-UPDATE clientes_ativos_governo c
+UPDATE active_clients_public_enrichment c
 SET razao_social       = n.razao_social,
     natureza_juridica  = n.natureza_juridica,
     capital_social     = n.capital_social,
@@ -262,13 +262,13 @@ WHERE c.cnpj_basico = n.cnpj_basico
 
 # --- Step 4: Final counts ---
 Write-Host "`n[4/4] Verifying results..." -ForegroundColor Yellow
-$totalCount = Run-PsqlQuery "SELECT COUNT(*) FROM clientes_ativos_governo;" "Total rows"
-$cnaeCount  = Run-PsqlQuery "SELECT COUNT(*) FROM clientes_ativos_governo WHERE cnae_fiscal_principal IS NOT NULL AND cnae_fiscal_principal <> '';" "Rows with CNAE"
-$natCount   = Run-PsqlQuery "SELECT COUNT(*) FROM clientes_ativos_governo WHERE natureza_juridica IS NOT NULL AND natureza_juridica <> '';" "Rows with natureza_juridica"
-$razaoCount = Run-PsqlQuery "SELECT COUNT(*) FROM clientes_ativos_governo WHERE razao_social IS NOT NULL AND razao_social <> '';" "Rows with razao_social"
+$totalCount = Run-PsqlQuery "SELECT COUNT(*) FROM active_clients_public_enrichment;" "Total rows"
+$cnaeCount  = Run-PsqlQuery "SELECT COUNT(*) FROM active_clients_public_enrichment WHERE cnae_fiscal_principal IS NOT NULL AND cnae_fiscal_principal <> '';" "Rows with CNAE"
+$natCount   = Run-PsqlQuery "SELECT COUNT(*) FROM active_clients_public_enrichment WHERE natureza_juridica IS NOT NULL AND natureza_juridica <> '';" "Rows with natureza_juridica"
+$razaoCount = Run-PsqlQuery "SELECT COUNT(*) FROM active_clients_public_enrichment WHERE razao_social IS NOT NULL AND razao_social <> '';" "Rows with razao_social"
 
 Write-Host "`n================================================" -ForegroundColor Cyan
-Write-Host "  DONE - clientes_ativos_governo populated" -ForegroundColor Green
+Write-Host "  DONE - active_clients_public_enrichment populated" -ForegroundColor Green
 Write-Host "  Total rows    : $totalCount" -ForegroundColor White
 Write-Host "  With CNAE     : $cnaeCount" -ForegroundColor White
 Write-Host "  With nat.jur. : $natCount" -ForegroundColor White
