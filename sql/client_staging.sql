@@ -23,13 +23,23 @@ CREATE TABLE IF NOT EXISTS clientes_staging (
     cnae_fiscal_principal text,
     cnae_fiscal_secundaria text,
     categoria_principal text,
+    categorias_detectadas text,
+    categoria_transporte boolean,
+    categoria_gas_combustivel boolean,
+    categoria_farmacia boolean,
+    categoria_construtora boolean,
+    categoria_industria boolean,
+    categoria_agro_produtor_rural boolean,
+    categoria_telecom boolean,
     categoria_ti_software boolean,
     categoria_saude_clinica boolean,
     categoria_financeiro boolean,
     categoria_cooperativa boolean,
     categoria_imobiliario boolean,
     categoria_grafica boolean,
-    categoria_frigorifico boolean
+    categoria_frigorifico boolean,
+    categoria_importador_exportador_status text,
+    categoria_beneficio_fiscal_status text
 );
 
 CREATE INDEX IF NOT EXISTS idx_clientes_staging_id_normalizado ON clientes_staging(id_normalizado);

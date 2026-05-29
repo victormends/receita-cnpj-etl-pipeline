@@ -1,0 +1,1 @@
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe"><NFe><infNFe><ide><mod>65</mod><nNF>303</nNF><dhEmi>2026-04-14T12:00:00-03:00</dhEmi></ide><emit><CNPJ>00000000000353</CNPJ><xNome>EMPRESA MISMATCH EXEMPLO LTDA</xNome><CRT>3</CRT></emit><det nItem="1"><imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS></imposto></det></infNFe></NFe></nfeProc>

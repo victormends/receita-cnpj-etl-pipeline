@@ -12,6 +12,8 @@ param(
 
     [string]$SimplesPath,
 
+    [string]$RegimeOverridePath,
+
     [string]$Delimiter = ';',
 
     [ValidateSet('UTF8', 'Default', 'Unicode', 'BigEndianUnicode', 'UTF7', 'UTF32', 'ASCII', 'OEM')]
@@ -20,7 +22,13 @@ param(
     [string]$CnpjColumn = 'CNPJ',
 
     [ValidateSet('Database', 'File')]
-    [string]$Mode = 'Database'
+    [string]$Mode = 'Database',
+
+    [string]$XmlRoot = '',
+
+    [string]$RecentXmlDiffPath = '',
+
+    [int]$XmlDiffMonthsBack = 2
 )
 
 Set-StrictMode -Version Latest
@@ -92,6 +100,21 @@ function Get-RegimeFromFlags {
     return 'Normal'
 }
 
+function Normalize-RegimeOverride {
+    param([object]$Value)
+
+    $text = ([string]$Value).Trim()
+    $key = $text.ToLowerInvariant()
+    switch ($key) {
+        'mei' { return 'MEI' }
+        'simples' { return 'Simples Nacional' }
+        'simples nacional' { return 'Simples Nacional' }
+        'normal' { return 'Normal' }
+        'regime normal' { return 'Normal' }
+        default { return $text }
+    }
+}
+
 function Add-ResultProperty {
     param(
         [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary]$Target,
@@ -109,6 +132,16 @@ function Add-ResultProperty {
     }
 
     $Target[$finalName] = $Value
+}
+
+function Get-FirstExistingValue {
+    param($Row, [string[]]$Names)
+
+    foreach ($name in $Names) {
+        $property = $Row.PSObject.Properties[$name]
+        if ($property) { return $property.Value }
+    }
+    return ''
 }
 
 function Get-ZipEntryText {
@@ -358,14 +391,8 @@ function New-ClassifierRuntimeConfig {
         throw 'PostgreSQL mode requires scripts\lib\preflight.ps1.'
     }
 
-    $candidateConfigPaths = @(
-        (Join-Path $scriptRoot 'config.ps1'),
-        (Join-Path $projectRoot 'config.ps1')
-    ) | Select-Object -Unique
-
-    foreach ($localConfigPath in $candidateConfigPaths) {
-        if (-not (Test-Path -LiteralPath $localConfigPath -PathType Leaf)) { continue }
-
+    $localConfigPath = Join-Path $scriptRoot 'config.ps1'
+    if (Test-Path -LiteralPath $localConfigPath -PathType Leaf) {
         $config = & $localConfigPath
         if (-not ($config -is [hashtable])) {
             throw "config.ps1 did not return a valid hashtable: $localConfigPath"
@@ -396,6 +423,46 @@ function Invoke-ClassifierSqlFile {
     finally {
         Remove-Item -LiteralPath $sqlFile -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Resolve-ConfiguredXmlRootLocal {
+    param([string]$RequestedRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedRoot)) { return $RequestedRoot }
+    if (-not [string]::IsNullOrWhiteSpace($env:CNPJ_XML_ROOT)) { return $env:CNPJ_XML_ROOT }
+    try {
+        $config = New-ClassifierRuntimeConfig
+        foreach ($key in @('xmlRoot', 'XmlRoot', 'xmlAuditRoot', 'XmlAuditRoot')) {
+            if ($config.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$config[$key])) { return [string]$config[$key] }
+        }
+    }
+    catch {
+        return ''
+    }
+    return ''
+}
+
+function Invoke-RecentXmlDiffIfConfigured {
+    param([string]$ExpectedPath)
+
+    $resolvedXmlRoot = Resolve-ConfiguredXmlRootLocal -RequestedRoot $XmlRoot
+    if ([string]::IsNullOrWhiteSpace($resolvedXmlRoot)) {
+        Write-Host 'Recent XML divergence report skipped: set -XmlRoot, CNPJ_XML_ROOT, or config xmlRoot to enable it.' -ForegroundColor Yellow
+        return
+    }
+
+    $diffScript = Join-Path $scriptRoot 'export-recent-xml-regime-diff.ps1'
+    if (-not (Test-Path -LiteralPath $diffScript -PathType Leaf)) {
+        Write-Host "Recent XML divergence report skipped: script not found: $diffScript" -ForegroundColor Yellow
+        return
+    }
+
+    $targetPath = $RecentXmlDiffPath
+    if ([string]::IsNullOrWhiteSpace($targetPath)) {
+        $targetPath = [System.IO.Path]::ChangeExtension($OutputPath, '.xml-divergencias-recentes.csv')
+    }
+
+    & $diffScript -ExpectedCsvPath $ExpectedPath -XmlRoot $resolvedXmlRoot -OutputPath $targetPath -MonthsBack $XmlDiffMonthsBack -Delimiter $Delimiter
 }
 
 function Import-SimplesMatchesWithPostgres {
@@ -563,9 +630,41 @@ function Import-SimplesMatchesFromFile {
     return $simplesMatches
 }
 
+function Import-RegimeOverrides {
+    param(
+        [string]$Path,
+        [Parameter(Mandatory = $true)][char]$DelimiterChar
+    )
+
+    $overrides = @{}
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $overrides }
+
+    foreach ($row in @(Import-Csv -LiteralPath $Path -Delimiter $DelimiterChar -Encoding UTF8)) {
+        $cnpjBasico = Normalize-CnpjBasico -Value (Get-FirstExistingValue -Row $row -Names @('cnpj_basico', 'CNPJ_BASICO', 'cnpj', 'CNPJ'))
+        $regime = Normalize-RegimeOverride -Value (Get-FirstExistingValue -Row $row -Names @('regime_tributario', 'regime', 'expected_regime'))
+        if ([string]::IsNullOrWhiteSpace($cnpjBasico) -or [string]::IsNullOrWhiteSpace($regime)) { continue }
+
+        $source = Get-FirstExistingValue -Row $row -Names @('classificacao_fonte', 'fonte', 'source')
+        $note = Get-FirstExistingValue -Row $row -Names @('classificacao_observacao', 'observacao', 'notes')
+        if ([string]::IsNullOrWhiteSpace($source)) { $source = 'Override oficial' }
+        if ([string]::IsNullOrWhiteSpace($note)) { $note = 'Regime informado por arquivo de override.' }
+
+        $overrides[$cnpjBasico] = [pscustomobject]@{
+            Regime = $regime
+            Fonte = $source
+            Observacao = $note
+        }
+    }
+
+    return $overrides
+}
+
 $InputPath = Resolve-RequiredFile -Path $InputPath -Label 'Input file'
 if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) {
     $SimplesPath = Resolve-RequiredFile -Path $SimplesPath -Label 'Simples CSV'
+}
+if (-not [string]::IsNullOrWhiteSpace($RegimeOverridePath)) {
+    $RegimeOverridePath = Resolve-RequiredFile -Path $RegimeOverridePath -Label 'Regime override CSV'
 }
 
 if ($Delimiter.Length -ne 1) {
@@ -582,6 +681,7 @@ Write-Host ' CLIENT CLASSIFIER - Receita Simples' -ForegroundColor Cyan
 Write-Host '===================================================' -ForegroundColor Cyan
 Write-Host " Input:   $InputPath" -ForegroundColor Yellow
 Write-Host " Simples: $(if ($SimplesPath) { $SimplesPath } else { 'not provided; regime fields will stay unclassified' })" -ForegroundColor Yellow
+Write-Host " Override: $(if ($RegimeOverridePath) { $RegimeOverridePath } else { 'not provided' })" -ForegroundColor Yellow
 Write-Host " Output:  $OutputPath" -ForegroundColor Yellow
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
@@ -644,6 +744,11 @@ if ($targetBasicos.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($SimplesPa
 
 Write-Host "Matched CNPJ basicos in Simples: $($simplesMatches.Count)" -ForegroundColor Gray
 
+$regimeOverrides = Import-RegimeOverrides -Path $RegimeOverridePath -DelimiterChar $Delimiter[0]
+if ($regimeOverrides.Count -gt 0) {
+    Write-Host "Regime overrides loaded: $($regimeOverrides.Count)" -ForegroundColor Gray
+}
+
 $results = New-Object System.Collections.ArrayList
 $counts = @{}
 
@@ -669,6 +774,13 @@ foreach ($prepared in $preparedClientes) {
         $observacao = 'Sem opcao por MEI ou Simples Nacional no arquivo informado.'
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($prepared.CnpjBasico) -and $regimeOverrides.ContainsKey($prepared.CnpjBasico)) {
+        $override = $regimeOverrides[$prepared.CnpjBasico]
+        $regime = $override.Regime
+        $fonte = $override.Fonte
+        $observacao = $override.Observacao
+    }
+
     if (-not $counts.ContainsKey($regime)) { $counts[$regime] = 0 }
     $counts[$regime]++
 
@@ -687,6 +799,7 @@ foreach ($prepared in $preparedClientes) {
 }
 
 $results | Export-Csv -LiteralPath $OutputPath -Delimiter $Delimiter -Encoding UTF8 -NoTypeInformation
+Invoke-RecentXmlDiffIfConfigured -ExpectedPath $OutputPath
 
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 foreach ($key in ($counts.Keys | Sort-Object)) {

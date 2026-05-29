@@ -11,6 +11,8 @@ param(
 
     [string]$SimplesPath,
 
+    [string]$RegimeOverridePath,
+
     [string]$ClassifiedInputPath,
 
     [Parameter(Mandatory = $true)]
@@ -21,6 +23,12 @@ param(
     [string]$ReviewPath = '',
 
     [string]$SummaryPath = '',
+
+    [string]$XmlRoot = '',
+
+    [string]$RecentXmlDiffPath = '',
+
+    [int]$XmlDiffMonthsBack = 2,
 
     [string]$Delimiter = ';',
 
@@ -51,17 +59,59 @@ function Resolve-OptionalFileLocal {
     return (Resolve-Path -LiteralPath $Path).Path
 }
 
+function Resolve-ConfiguredXmlRootLocal {
+    param([string]$RequestedRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedRoot)) { return $RequestedRoot }
+    if (-not [string]::IsNullOrWhiteSpace($env:CNPJ_XML_ROOT)) { return $env:CNPJ_XML_ROOT }
+
+    $configPath = Join-Path $projectRoot 'config.ps1'
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        $config = & $configPath
+        if ($config -is [hashtable]) {
+            foreach ($key in @('xmlRoot', 'XmlRoot', 'xmlAuditRoot', 'XmlAuditRoot')) {
+                if ($config.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$config[$key])) { return [string]$config[$key] }
+            }
+        }
+    }
+    return ''
+}
+
+function Invoke-RecentXmlDiffIfConfigured {
+    param([string]$ExpectedPath)
+
+    $resolvedXmlRoot = Resolve-ConfiguredXmlRootLocal -RequestedRoot $XmlRoot
+    if ([string]::IsNullOrWhiteSpace($resolvedXmlRoot)) {
+        Write-Host 'Recent XML divergence report skipped: set -XmlRoot, CNPJ_XML_ROOT, or config xmlRoot to enable it.' -ForegroundColor Yellow
+        return
+    }
+
+    $diffScript = Join-Path $scriptRoot 'export-recent-xml-regime-diff.ps1'
+    if (-not (Test-Path -LiteralPath $diffScript -PathType Leaf)) {
+        Write-Host "Recent XML divergence report skipped: script not found: $diffScript" -ForegroundColor Yellow
+        return
+    }
+
+    $targetPath = $RecentXmlDiffPath
+    if ([string]::IsNullOrWhiteSpace($targetPath)) {
+        $targetPath = [System.IO.Path]::ChangeExtension($OutputPath, '.xml-divergencias-recentes.csv')
+    }
+
+    & $diffScript -ExpectedCsvPath $ExpectedPath -XmlRoot $resolvedXmlRoot -OutputPath $targetPath -MonthsBack $XmlDiffMonthsBack -Delimiter $Delimiter
+}
+
 function Resolve-DefaultEnrichmentPath {
     $candidates = @(
-        (Join-Path $scriptRoot 'data\operational-enrichment.csv'),
-        (Join-Path $projectRoot 'data\operational-enrichment.csv')
+        (Join-Path $scriptRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
+        (Join-Path $projectRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
+        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\Clientes_A_limpo_cnpj_corrigido.csv')
     )
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
 
-    throw 'Enrichment CSV was not provided and the default operational-enrichment.csv was not found beside the executable or in project data.'
+    throw 'Enrichment CSV was not provided and the default Clientes_A_limpo_cnpj_corrigido.csv was not found beside the executable, in project data, or in Downloads.'
 }
 
 function Normalize-DigitsLocal {
@@ -100,6 +150,18 @@ function Get-PropValue {
         if ($property) { return $property.Value }
     }
     return ''
+}
+
+function Get-ClassifierOutputValue {
+    param($Row, [string]$BaseName)
+
+    $classifierProperty = @($Row.PSObject.Properties |
+        Where-Object { $_.Name -eq "${BaseName}_classificador" -or $_.Name -match "^$([regex]::Escape($BaseName))_classificador_\d+$" } |
+        Sort-Object Name |
+        Select-Object -Last 1)
+    if ($classifierProperty.Count -gt 0) { return $classifierProperty[0].Value }
+
+    return (Get-PropValue -Row $Row -Names @($BaseName))
 }
 
 function Convert-ToPgBoolText {
@@ -145,15 +207,16 @@ function Export-GovernmentCategories {
     param([string]$Path)
 
     $psqlCandidates = @(
-        'C:\Program Files\PostgreSQL\17\bin\psql.exe',
-        'C:\Program Files\PostgreSQL\16\bin\psql.exe',
+        'D:\Postgres\bin\psql.exe',
+        'C:\Postgres17\bin\psql.exe',
+        'C:\Postgres16\bin\psql.exe',
         'psql.exe'
     )
     $psqlPath = $psqlCandidates | Where-Object { (Get-Command $_ -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
     if (-not $psqlPath) { throw 'psql.exe was not found. Cannot export government CNAE data.' }
 
     $hostCandidates = @('localhost', '127.0.0.1')
-    $portCandidates = @($env:CNPJ_ETL_DB_PORT, $env:PGPORT, '5432') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+    $portCandidates = @($env:CNPJ_ETL_DB_PORT, $env:PGPORT, '5253', '5432') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
     $dbName = if ($env:CNPJ_ETL_DB_NAME) { $env:CNPJ_ETL_DB_NAME } else { 'postgres' }
     $dbUser = if ($env:CNPJ_ETL_DB_USER) { $env:CNPJ_ETL_DB_USER } elseif ($env:PGUSER) { $env:PGUSER } else { 'postgres' }
 
@@ -214,7 +277,7 @@ COPY (
             cnae_fiscal_principal,
             cnae_fiscal_secundaria,
             natureza_juridica
-        FROM active_clients_public_enrichment
+        FROM clientes_ativos_governo
     ),
     cnaes AS (
         SELECT cnpj, NULLIF(regexp_replace(COALESCE(cnae_fiscal_principal, ''), '[^0-9]', '', 'g'), '') AS cnae, 'principal' AS cnae_origem
@@ -342,6 +405,7 @@ $InputPath = Resolve-RequiredFileLocal -Path $InputPath -Label 'Input file'
 if ([string]::IsNullOrWhiteSpace($EnrichmentPath)) { $EnrichmentPath = Resolve-DefaultEnrichmentPath }
 else { $EnrichmentPath = Resolve-RequiredFileLocal -Path $EnrichmentPath -Label 'Enrichment CSV' }
 $SimplesPath = Resolve-OptionalFileLocal -Path $SimplesPath -Label 'Simples CSV'
+$RegimeOverridePath = Resolve-OptionalFileLocal -Path $RegimeOverridePath -Label 'Regime override CSV'
 $ClassifiedInputPath = Resolve-OptionalFileLocal -Path $ClassifiedInputPath -Label 'Existing classified CSV'
 
 $outputParent = Split-Path -Parent $OutputPath
@@ -360,6 +424,7 @@ Write-Host " Base input:  $InputPath" -ForegroundColor Yellow
 Write-Host " Enrichment:  $EnrichmentPath" -ForegroundColor Yellow
 Write-Host " Classified:  $(if ($ClassifiedInputPath) { $ClassifiedInputPath } else { 'generated from base input' })" -ForegroundColor Yellow
 Write-Host " Simples:     $(if ($SimplesPath) { $SimplesPath } elseif ($ClassifiedInputPath) { 'already supplied by classified input when present' } else { 'not provided; regime fields will stay unclassified' })" -ForegroundColor Yellow
+Write-Host " Override:    $(if ($RegimeOverridePath) { $RegimeOverridePath } else { 'not provided' })" -ForegroundColor Yellow
 Write-Host " Output:      $OutputPath" -ForegroundColor Yellow
 Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
@@ -374,6 +439,7 @@ else {
         Mode = $Mode
     }
     if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $classifierArgs.SimplesPath = $SimplesPath }
+    if (-not [string]::IsNullOrWhiteSpace($RegimeOverridePath)) { $classifierArgs.RegimeOverridePath = $RegimeOverridePath }
     & $classifier @classifierArgs
 }
 
@@ -468,7 +534,9 @@ foreach ($base in $classifiedRows) {
     Add-ColumnValue $auditRow 'cidade' (Get-PropValue -Row $base -Names @('Cidade', 'cidade'))
     Add-ColumnValue $auditRow 'estado' (Get-PropValue -Row $base -Names @('Estado', 'estado'))
     Add-ColumnValue $auditRow 'cnpj' $cnpj
-    Add-ColumnValue $auditRow 'regime_tributario' (Get-PropValue -Row $base -Names @('regime_tributario'))
+    Add-ColumnValue $auditRow 'cnpj_normalizado' $cnpj
+    Add-ColumnValue $auditRow 'cnpj_basico' $(if ($cnpj -match '^\d{14}$') { $cnpj.Substring(0, 8) } else { '' })
+    Add-ColumnValue $auditRow 'regime_tributario' (Get-ClassifierOutputValue -Row $base -BaseName 'regime_tributario')
     Add-ColumnValue $auditRow 'postgres_versao' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('postgres_versao_normalizada') } else { '' })
     Add-ColumnValue $auditRow 'arquitetura_os' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('arquitetura_os_normalizada') } else { '' })
     Add-ColumnValue $auditRow 'provedor' $(if ($enriched) { Get-PropValue -Row $enriched -Names @('provedor_normalizado') } else { '' })
@@ -498,8 +566,8 @@ foreach ($base in $classifiedRows) {
     Add-ColumnValue $reviewRow 'cnpj_diverge_enriquecimento' $diverge
     Add-ColumnValue $reviewRow 'enrichment_match_status' $matchStatus
     Add-ColumnValue $reviewRow 'linha_origem_enriquecimento' $(if ($enriched) { $enriched.__linha_origem } else { '' })
-    Add-ColumnValue $reviewRow 'classificacao_fonte' (Get-PropValue -Row $base -Names @('classificacao_fonte'))
-    Add-ColumnValue $reviewRow 'classificacao_observacao' (Get-PropValue -Row $base -Names @('classificacao_observacao'))
+    Add-ColumnValue $reviewRow 'classificacao_fonte' (Get-ClassifierOutputValue -Row $base -BaseName 'classificacao_fonte')
+    Add-ColumnValue $reviewRow 'classificacao_observacao' (Get-ClassifierOutputValue -Row $base -BaseName 'classificacao_observacao')
     Add-ColumnValue $reviewRow 'cnae_fiscal_principal' (Get-PropValue -Row $gov -Names @('cnae_fiscal_principal'))
 
     if ([string]::IsNullOrWhiteSpace($id) -or $matchStatus -ne 'matched' -or [string]::IsNullOrWhiteSpace($cnpj) -or $diverge -eq 'true') {
@@ -511,6 +579,7 @@ if ($duplicateBaseIds.Count -gt 0) { throw "Duplicate base IDs after normalizati
 
 $results | Export-Csv -LiteralPath $OutputPath -Delimiter $Delimiter -Encoding UTF8 -NoTypeInformation
 $review | Export-Csv -LiteralPath $ReviewPath -Delimiter $Delimiter -Encoding UTF8 -NoTypeInformation
+Invoke-RecentXmlDiffIfConfigured -ExpectedPath $OutputPath
 
 $summary = [ordered]@{
     total_base_rows = $classifiedRows.Count

@@ -147,6 +147,57 @@ function New-TestXlsxFile {
     }
 }
 
+function Write-TestFile {
+    param([string]$Path, [string]$Content)
+
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Set-Content -LiteralPath $Path -Value $Content -NoNewline -Encoding UTF8
+}
+
+function New-TestNfeXml {
+    param(
+        [string]$Cnpj,
+        [string]$Crt,
+        [string]$IcmsXml,
+        [string]$DhEmi = '2026-04-10T10:00:00-03:00',
+        [string]$Modelo = '55',
+        [string]$Numero = '1'
+    )
+
+    return "<nfeProc versao=`"4.00`" xmlns=`"http://www.portalfiscal.inf.br/nfe`"><NFe><infNFe><ide><mod>$Modelo</mod><nNF>$Numero</nNF><dhEmi>$DhEmi</dhEmi></ide><emit><CNPJ>$Cnpj</CNPJ><xNome>EMPRESA TESTE LTDA</xNome><CRT>$Crt</CRT></emit><det nItem=`"1`"><imposto>$IcmsXml<PIS><PISNT><CST>07</CST></PISNT></PIS><COFINS><COFINSNT><CST>07</CST></COFINSNT></COFINS></imposto></det></infNFe></NFe></nfeProc>"
+}
+
+function New-TestCteXml {
+    param(
+        [string]$Cnpj,
+        [string]$IcmsXml,
+        [string]$DhEmi = '2026-05-10T10:00:00-03:00',
+        [string]$Numero = '1'
+    )
+
+    return "<cteProc versao=`"4.00`" xmlns=`"http://www.portalfiscal.inf.br/cte`"><CTe><infCte><ide><mod>57</mod><nCT>$Numero</nCT><dhEmi>$DhEmi</dhEmi></ide><emit><CNPJ>$Cnpj</CNPJ></emit><imp><ICMS>$IcmsXml</ICMS></imp></infCte></CTe></cteProc>"
+}
+
+function Invoke-XmlRegimeAuditorTest {
+    param([string]$XmlRoot, [string]$ExpectedCsvPath, [string]$OutputPath, [switch]$OnlyProblems, [string]$ProblemReportPath = '', [string]$GroupedReportPath = '')
+
+    $scriptPath = Join-Path $ProjectRoot 'scripts\audit-xml-regime.ps1'
+    $args = @{
+        XmlRoot = $XmlRoot
+        ExpectedCsvPath = $ExpectedCsvPath
+        OutputPath = $OutputPath
+        LatestMonthsToTry = 3
+        MaxFilesPerCompanyType = 5
+    }
+    if ($OnlyProblems) { $args.OnlyProblems = $true }
+    if (-not [string]::IsNullOrWhiteSpace($ProblemReportPath)) { $args.ProblemReportPath = $ProblemReportPath }
+    if (-not [string]::IsNullOrWhiteSpace($GroupedReportPath)) { $args.GroupedReportPath = $GroupedReportPath }
+    & $scriptPath @args | Out-Null
+}
+
 function Get-ScriptText {
     param([string]$RelativePath)
     return [System.IO.File]::ReadAllText((Join-Path $ProjectRoot $RelativePath))
@@ -260,8 +311,8 @@ try {
         Assert-MatchText $text 'cnae_fiscal_secundaria' 'import.ps1 must classify using secondary CNAEs as well as principal CNAE.'
         Assert-MatchText $text "natureza_juridica = '2143'" 'import.ps1 must classify cooperatives from government legal-nature data.'
         Assert-MatchText $text 'captureActiveClients' 'import.ps1 must optionally capture government data for active client CNPJs.'
-        Assert-MatchText $text 'tmp_active_client_targets' 'import.ps1 must load active client CNPJs into a staging target table.'
-        Assert-MatchText $text 'active_clients_public_enrichment' 'import.ps1 must persist active client CNAE/government lookup rows.'
+        Assert-MatchText $text 'tmp_clientes_ativos_alvo' 'import.ps1 must load active client CNPJs into a staging target table.'
+        Assert-MatchText $text 'clientes_ativos_governo' 'import.ps1 must persist active client CNAE/government lookup rows.'
         Assert-MatchText $text 'Reason ''import transaction verified''' 'import.ps1 must delete LIMPO files only after verification.'
     }
 
@@ -269,7 +320,7 @@ try {
         $schema = Get-ScriptText 'sql\schema.sql'
         Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS cnae_categoria_map' 'schema.sql must define the CNAE category map.'
         Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS estabelecimentos_categorias' 'schema.sql must define generated establishment category matches.'
-        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS active_clients_public_enrichment' 'schema.sql must define active-client government lookup table.'
+        Assert-MatchText $schema 'CREATE TABLE IF NOT EXISTS clientes_ativos_governo' 'schema.sql must define active-client government lookup table.'
         $staging = Get-ScriptText 'sql\client_staging.sql'
         Assert-MatchText $staging 'CREATE TABLE IF NOT EXISTS clientes_staging' 'client_staging.sql must define the client staging table.'
         Assert-MatchText $staging 'CREATE TABLE IF NOT EXISTS clientes_categorias' 'client_staging.sql must define normalized client categories.'
@@ -339,6 +390,7 @@ try {
         Assert-MatchText $text 'classify-clientes\.ps1' 'classifier packaging must copy the classifier script beside the executable.'
         Assert-MatchText $text 'config\.ps1' 'classifier packaging must copy config for PostgreSQL mode.'
         Assert-MatchText $text 'preflight\.ps1' 'classifier packaging must copy PostgreSQL preflight helpers.'
+        Assert-MatchText $text 'capture-active-clients\.ps1' 'classifier packaging must copy the active-client capture script.'
     }
 
     Invoke-Test 'client staging builder protects IDs and broken enrichment CNPJ' {
@@ -347,18 +399,51 @@ try {
         Assert-MatchText $text "TrimStart\('0'\)" 'staging builder must prevent 1.003/1003/0001003 mismatches.'
         Assert-MatchText $text 'cnpj_corrigido' 'staging builder must use corrected enrichment CNPJ only as fallback/audit.'
         Assert-MatchText $text 'enriquecimento_fallback' 'staging builder must label enrichment CNPJ fallback.'
+        Assert-MatchText $text 'function Get-ClassifierOutputValue' 'staging builder must prefer columns produced by the classifier when source columns already exist.'
+        Assert-MatchText $text 'cnpj_normalizado' 'staging builder must expose normalized CNPJ for auditability.'
+        Assert-MatchText $text 'cnpj_basico' 'staging builder must expose CNPJ basico for auditability.'
         Assert-MatchText $text 'Convert-ToPgBoolText' 'staging builder must convert localized yes/no values to PostgreSQL booleans.'
         Assert-MatchText $text 'IncludeGovernmentData' 'staging builder must optionally enrich with government CNAE category data.'
-        Assert-MatchText $text 'active_clients_public_enrichment' 'staging builder must consume the active-client government lookup when present.'
+        Assert-MatchText $text 'clientes_ativos_governo' 'staging builder must consume the active-client government lookup when present.'
         Assert-MatchText $text 'external_source_required' 'staging builder must not guess fiscal/import-export categories CNAE cannot prove.'
+    }
+
+    Invoke-Test 'client staging builder prefers classifier regime for existing regime column' {
+        $root = New-TestRoot; $tempRoots += $root
+        $inputPath = Join-Path $root 'clientes.csv'
+        $enrichmentPath = Join-Path $root 'enrichment.csv'
+        $simplesPath = Join-Path $root 'simples.csv'
+        $outputPath = Join-Path $root 'report.csv'
+        $scriptPath = Join-Path $ProjectRoot 'scripts\build-client-staging.ps1'
+
+        Write-TestFile -Path $inputPath -Content @'
+ID;Nome;Razao Social;Cidade;Estado;CNPJ;regime_tributario
+241;Lojao Do Carlao;Silvia Waligura Nowak;Cruz Machado;PR;6343186000168;Normal
+'@
+        Write-TestFile -Path $enrichmentPath -Content @'
+ID;cnpj_corrigido;nome_normalizado;razao_social_normalizada
+241;06343186000168;Lojao Do Carlao;Silvia Waligura Nowak
+'@
+        Write-TestFile -Path $simplesPath -Content @'
+06343186;S;20200101;;N;;
+'@
+
+        & $scriptPath -InputPath $inputPath -EnrichmentPath $enrichmentPath -SimplesPath $simplesPath -OutputPath $outputPath -Delimiter ';' -Mode File | Out-Null
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+
+        Assert-Equal 1 $rows.Count 'staging builder should output one row.'
+        Assert-Equal '06343186000168' $rows[0].cnpj 'staging builder should pad missing leading zero.'
+        Assert-Equal '06343186000168' $rows[0].cnpj_normalizado 'staging builder should expose normalized CNPJ.'
+        Assert-Equal '06343186' $rows[0].cnpj_basico 'staging builder should expose CNPJ basico.'
+        Assert-Equal 'Simples Nacional' $rows[0].regime_tributario 'staging builder should use classifier-created regime, not stale source regime.'
     }
 
     Invoke-Test 'capture active clients script populates government lookup from LIMPO files' {
         $text = Get-ScriptText 'scripts\capture-active-clients.ps1'
-        Assert-MatchText $text 'tmp_active_client_targets' 'capture script must create target CNPJ staging table.'
+        Assert-MatchText $text 'tmp_clientes_ativos_alvo' 'capture script must create target CNPJ staging table.'
         Assert-MatchText $text 'tmp_estabelecimentos_stage' 'capture script must create establishment staging table.'
         Assert-MatchText $text 'tmp_empresas_stage' 'capture script must create empresa staging table.'
-        Assert-MatchText $text 'active_clients_public_enrichment' 'capture script must insert into government lookup table.'
+        Assert-MatchText $text 'clientes_ativos_governo' 'capture script must insert into government lookup table.'
         Assert-MatchText $text 'LIMPO_\*\.ESTABELE' 'capture script must process LIMPO establishment files.'
         Assert-MatchText $text 'LIMPO_\*\.EMPRECSV' 'capture script must process LIMPO empresa files.'
         Assert-MatchText $text 'situacao_cadastral' 'capture script must filter by active cadastral status.'
@@ -403,6 +488,34 @@ try {
         Assert-Equal 'Simples Nacional' $rows[1].regime_tributario 'second XLSX row should be Simples Nacional.'
     }
 
+    Invoke-Test 'client classifier applies auditable regime overrides' {
+        $root = New-TestRoot; $tempRoots += $root
+        $inputPath = Join-Path $root 'clientes.csv'
+        $simplesPath = Join-Path $root 'simples.csv'
+        $overridePath = Join-Path $root 'overrides.csv'
+        $outputPath = Join-Path $root 'clientes_classificados.csv'
+        $scriptPath = Join-Path $ProjectRoot 'scripts\classify-clientes.ps1'
+
+        Write-TestFile -Path $inputPath -Content @'
+ID;Nome;CNPJ
+1;Tele Antenas;09372387000181
+'@
+        Write-TestFile -Path $simplesPath -Content @'
+09372387;N;20080219;20080219;N;00000000;00000000
+'@
+        Write-TestFile -Path $overridePath -Content @'
+cnpj;cnpj_basico;regime_tributario;fonte;observacao
+09372387000181;09372387;Simples Nacional;Consulta Optantes Simples Nacional;Optante desde 19/02/2008
+'@
+
+        & $scriptPath -InputPath $inputPath -SimplesPath $simplesPath -RegimeOverridePath $overridePath -OutputPath $outputPath -Delimiter ';' -Mode File | Out-Null
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+
+        Assert-Equal 'Simples Nacional' $rows[0].regime_tributario 'official override should replace local snapshot classification.'
+        Assert-Equal 'Consulta Optantes Simples Nacional' $rows[0].classificacao_fonte 'override source should be preserved.'
+        Assert-MatchText $rows[0].classificacao_observacao 'Optante desde 19/02/2008' 'override observation should be preserved.'
+    }
+
     Invoke-Test 'client classifier docs and ignore rules protect private data' {
         $gitignore = Get-ScriptText '.gitignore'
         $docs = Get-ScriptText 'docs\client-classifier.md'
@@ -413,8 +526,225 @@ try {
         Assert-MatchText $gitignore '!examples/\*\.sample\.csv' '.gitignore must allow synthetic sample CSV files.'
         Assert-MatchText $docs 'original system Excel export can be selected directly' 'client classifier docs must explain XLSX support.'
         Assert-MatchText $docs '-Mode Database' 'client classifier docs must explain PostgreSQL mode for large Simples files.'
+        Assert-MatchText $docs '-RegimeOverridePath' 'client classifier docs must explain auditable official overrides.'
         Assert-MatchText $docs '`Normal` does not mean Lucro Real' 'docs must explain the Normal limitation.'
         Assert-MatchText $docs 'Do not infer MEI from `natureza_juridica = 2135`' 'docs must reject natureza_juridica as the MEI source.'
+    }
+
+    Invoke-Test 'Consulta Optantes export helper avoids portal automation' {
+        $scriptText = Get-ScriptText 'scripts\export-consulta-optantes-list.ps1'
+        $docs = Get-ScriptText 'docs\client-classifier.md'
+
+        Assert-MatchText $scriptText 'consulta_regime_tributario' 'helper must export a field for manual consultation result.'
+        Assert-MatchText $scriptText 'Test-CnpjCheckDigits' 'helper must reject CPF/invalid CNPJ values instead of padding them.'
+        Assert-MatchText $scriptText 'Consulta Optantes Simples Nacional' 'helper must preserve the official source name.'
+        Assert-MatchText $docs 'hCaptcha' 'docs must explain why bulk portal scraping is not automated.'
+        Assert-MatchText $docs 'export-consulta-optantes-list.ps1' 'docs must mention the safe consultation export helper.'
+    }
+
+    Invoke-Test 'Consulta Optantes Playwright helper requires manual captcha' {
+        $scriptText = Get-ScriptText 'scripts\consulta-optantes-playwright.mjs'
+        $snippetText = Get-ScriptText 'scripts\consulta-optantes-browser-snippet.js'
+        $packageText = Get-ScriptText 'package.json'
+        $docs = Get-ScriptText 'docs\client-classifier.md'
+
+        Assert-MatchText $scriptText 'Resolve the hCaptcha' 'Playwright helper must require manual captcha resolution.'
+        Assert-MatchText $scriptText 'interaction' 'Playwright helper should support manual interaction mode.'
+        Assert-MatchText $scriptText 'Copied CNPJ to clipboard' 'Playwright helper should copy CNPJ for manual paste.'
+        Assert-MatchText $scriptText 'launchPersistentContext' 'Playwright helper should use a persistent visible browser profile.'
+        Assert-MatchText $scriptText 'isValidCnpj' 'Playwright helper must reject CPF/invalid CNPJ values.'
+        Assert-MatchText $scriptText 'consulta_regime_tributario' 'Playwright helper must write consultation results.'
+        Assert-MatchText $snippetText 'localStorage' 'normal-browser snippet must persist progress locally.'
+        Assert-MatchText $snippetText 'Capture Result' 'normal-browser snippet must capture visible portal result.'
+        Assert-MatchText $snippetText 'window.open' 'normal-browser snippet must keep the assistant alive across portal navigation.'
+        Assert-MatchText $snippetText 'findCnpjInput' 'normal-browser snippet must robustly locate the CNPJ input.'
+        Assert-MatchText $snippetText 'Start Auto Next' 'normal-browser snippet should provide an assisted automatic mode.'
+        Assert-MatchText $snippetText 'findConsultarButton' 'normal-browser snippet should click Consultar from the normal browser tab.'
+        Assert-MatchText $snippetText 'setInterval\(tickAuto' 'normal-browser snippet should watch for portal results.'
+        Assert-MatchText $snippetText 'consultaoptantes' 'normal-browser snippet should guide users to the direct portal page.'
+        Assert-MatchText $docs 'Start Auto Next' 'docs must explain the automatic normal-browser workflow.'
+        Assert-MatchText $docs 'consulta-optantes-browser-snippet.js' 'docs must mention the normal-browser snippet fallback.'
+        Assert-MatchText $packageText 'playwright' 'package.json must declare Playwright dependency.'
+        Assert-MatchText $docs 'consulta-optantes-playwright.mjs' 'docs must mention the Playwright helper.'
+    }
+
+    Invoke-Test 'recent XML diff is integrated with classifier and pipeline outputs' {
+        $classifier = Get-ScriptText 'scripts\classify-clientes.ps1'
+        $builder = Get-ScriptText 'scripts\build-client-staging.ps1'
+        $export = Get-ScriptText 'scripts\export.ps1'
+        $config = Get-ScriptText 'config.ps1'
+        $readme = Get-ScriptText 'README.md'
+        $docs = Get-ScriptText 'docs\client-classifier.md'
+
+        Assert-MatchText $classifier '\$XmlRoot' 'classifier must expose XmlRoot for recent XML diff generation.'
+        Assert-MatchText $classifier 'Invoke-RecentXmlDiffIfConfigured' 'classifier must run recent XML diff after output export.'
+        Assert-MatchText $builder '\$XmlDiffMonthsBack = 2' 'staging builder must default recent XML diff to two months.'
+        Assert-MatchText $builder 'export-recent-xml-regime-diff\.ps1' 'staging builder must call the reusable recent XML diff script.'
+        Assert-MatchText $export 'export-recent-xml-regime-diff\.ps1' 'pipeline export must call the reusable recent XML diff script.'
+        Assert-MatchText $config 'xmlRoot\s*=' 'config must expose an optional xmlRoot setting.'
+        Assert-MatchText $readme 'xml-divergencias-recentes' 'README must document automatic recent XML divergence outputs.'
+        Assert-MatchText $docs 'XmlDiffMonthsBack 2' 'classifier docs must document the two-month default.'
+    }
+
+    Invoke-Test 'xml regime auditor exposes public-safe parameters and docs' {
+        $text = Get-ScriptText 'scripts\audit-xml-regime.ps1'
+        $docs = Get-ScriptText 'docs\xml-regime-auditor.md'
+        $readme = Get-ScriptText 'README.md'
+        $gitignore = Get-ScriptText '.gitignore'
+
+        Assert-MatchText $text '\$XmlRoot' 'auditor must require an XML root parameter.'
+        Assert-MatchText $text '\$ExpectedCsvPath' 'auditor must require an expected CSV parameter.'
+        Assert-MatchText $text '\$OnlyProblems' 'auditor should expose an OnlyProblems filter.'
+        Assert-MatchText $text '\$ThrottleLimit' 'auditor should expose a bounded worker throttle.'
+        Assert-MatchText $text "@\('NF-e', 'NFC-e'\)" 'auditor v1 should default to NF-e and NFC-e only.'
+        Assert-MatchText $text 'System\.Xml\.XmlReader' 'auditor must use XmlReader for one-line namespace XMLs.'
+        Assert-MatchText $text 'Test-StackContains -Stack \$stack -Name ''ICMS''' 'auditor must scope CST detection to ICMS.'
+        Assert-MatchText $text 'Start-Job' 'auditor must process company chunks in parallel on Windows PowerShell.'
+        Assert-False ($text -match '\[string\]\$XmlRoot = ''\\\\server\\XML''') 'auditor must not default to a private network share.'
+        Assert-MatchText $docs 'not legal or accounting advice' 'auditor docs must state audit limitation.'
+        Assert-MatchText $docs 'PIS/COFINS `CST` is not treated as ICMS' 'auditor docs must explain CST scoping.'
+        Assert-MatchText $text "'CTE' \{ return 'CT-e' \}" 'auditor should canonicalize CT-e aliases.'
+        Assert-MatchText $docs 'MDF-e is not used as direct regime evidence' 'auditor docs must document why MDF-e is excluded.'
+        Assert-MatchText $readme 'XML Regime Auditor' 'README must mention the XML auditor.'
+        Assert-MatchText $gitignore '\*\.xml' '.gitignore must ignore private XML files.'
+        Assert-MatchText $gitignore '!examples/\*\*/\*\.xml' '.gitignore must allow synthetic XML examples.'
+    }
+
+    Invoke-Test 'xml regime auditor classifies synthetic fixtures' {
+        $root = New-TestRoot; $tempRoots += $root
+        $xmlRoot = Join-Path $root 'xml'
+        $expectedPath = Join-Path $root 'expected.csv'
+        $outputPath = Join-Path $root 'audit.csv'
+
+        Write-TestFile -Path $expectedPath -Content @'
+cnpj;expected_regime
+00000000000191;Simples Nacional
+00000000000272;Normal
+00000000000353;Simples Nacional
+00000000000434;Normal
+00000000000515;Simples Nacional
+00000000000604;Normal
+'@
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000191\NF-e\202604\Caixa1\simples.xml') -Content (New-TestNfeXml -Cnpj '00000000000191' -Crt '1' -IcmsXml '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -Numero '101')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000272\NF-e\202604\normal.xml') -Content (New-TestNfeXml -Cnpj '00000000000272' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -Numero '202')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000353\NFC-e\202604\mismatch.xml') -Content (New-TestNfeXml -Cnpj '00000000000353' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -Modelo '65' -Numero '303')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000434\NF-e\202604\sublimite.xml') -Content (New-TestNfeXml -Cnpj '00000000000434' -Crt '2' -IcmsXml '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -Numero '404')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000515\Entradas\202604\entrada.xml') -Content (New-TestNfeXml -Cnpj '99999999000199' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -Numero '505')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000604\NF-e\202604\issuer-mismatch.xml') -Content (New-TestNfeXml -Cnpj '11111111000111' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -Numero '606')
+
+        Invoke-XmlRegimeAuditorTest -XmlRoot $xmlRoot -ExpectedCsvPath $expectedPath -OutputPath $outputPath
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+        Assert-Equal 6 $rows.Count 'auditor should output one row per expected CNPJ.'
+
+        $byCnpj = @{}
+        foreach ($row in $rows) { $byCnpj[$row.cnpj] = $row }
+        Assert-Equal 'OK' $byCnpj['00000000000191'].status 'Simples XML should match expected Simples.'
+        Assert-Equal 'OK' $byCnpj['00000000000272'].status 'Normal XML should match expected Normal.'
+        Assert-Equal 'Mismatch' $byCnpj['00000000000353'].status 'Expected Simples with Normal XML should mismatch.'
+        Assert-Equal 'ExpectedSimplesXmlNormal' $byCnpj['00000000000353'].reason 'Mismatch reason should be explicit.'
+        Assert-Equal 'Review' $byCnpj['00000000000434'].status 'CRT 2 should require review.'
+        Assert-Equal 'Sublimite' $byCnpj['00000000000434'].reason 'CRT 2 should be labeled Sublimite.'
+        Assert-Equal 'NoEvidence' $byCnpj['00000000000515'].status 'Entradas should be ignored by default.'
+        Assert-Equal 'Review' $byCnpj['00000000000604'].status 'Issuer mismatch should require review.'
+        Assert-Equal 'IssuerMismatch' $byCnpj['00000000000604'].reason 'Issuer mismatch reason should be explicit.'
+    }
+
+    Invoke-Test 'xml regime auditor scopes CST to ICMS and chooses newest dhEmi' {
+        $root = New-TestRoot; $tempRoots += $root
+        $xmlRoot = Join-Path $root 'xml'
+        $expectedPath = Join-Path $root 'expected.csv'
+        $outputPath = Join-Path $root 'audit.csv'
+
+        Write-TestFile -Path $expectedPath -Content @'
+cnpj;expected_regime
+00000000000787;Simples Nacional
+00000000000868;Normal
+'@
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000787\NF-e\202604\pis-cst-only.xml') -Content (New-TestNfeXml -Cnpj '00000000000787' -Crt '' -IcmsXml '<ICMS><ICMSOutra><orig>0</orig></ICMSOutra></ICMS>' -Numero '707')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000868\NF-e\202604\older-normal.xml') -Content (New-TestNfeXml -Cnpj '00000000000868' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -DhEmi '2026-04-01T10:00:00-03:00' -Numero '801')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000868\NF-e\202604\newer-simples.xml') -Content (New-TestNfeXml -Cnpj '00000000000868' -Crt '1' -IcmsXml '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -DhEmi '2026-04-20T10:00:00-03:00' -Numero '802')
+
+        Invoke-XmlRegimeAuditorTest -XmlRoot $xmlRoot -ExpectedCsvPath $expectedPath -OutputPath $outputPath
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+        $byCnpj = @{}
+        foreach ($row in $rows) { $byCnpj[$row.cnpj] = $row }
+
+        Assert-Equal 'Review' $byCnpj['00000000000787'].status 'PIS/COFINS CST alone must not classify XML as Normal.'
+        Assert-Equal 'UnknownXmlRegime' $byCnpj['00000000000787'].reason 'Missing CRT and no ICMS CST/CSOSN should be unknown.'
+        Assert-Equal '802' $byCnpj['00000000000868'].xml_numero 'auditor should select newest dhEmi evidence across candidates.'
+        Assert-Equal 'Mismatch' $byCnpj['00000000000868'].status 'Newest Simples XML should mismatch expected Normal.'
+        Assert-Equal 'ExpectedNormalXmlSimples' $byCnpj['00000000000868'].reason 'Newest evidence mismatch reason should be explicit.'
+    }
+
+    Invoke-Test 'xml regime auditor OnlyProblems omits OK rows' {
+        $root = New-TestRoot; $tempRoots += $root
+        $xmlRoot = Join-Path $root 'xml'
+        $expectedPath = Join-Path $root 'expected.csv'
+        $outputPath = Join-Path $root 'audit.csv'
+
+        Write-TestFile -Path $expectedPath -Content @'
+cnpj;expected_regime
+00000000000191;Simples Nacional
+00000000000353;Simples Nacional
+'@
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000191\NF-e\202604\simples.xml') -Content (New-TestNfeXml -Cnpj '00000000000191' -Crt '1' -IcmsXml '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -Numero '101')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000353\NF-e\202604\normal.xml') -Content (New-TestNfeXml -Cnpj '00000000000353' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -Numero '303')
+
+        Invoke-XmlRegimeAuditorTest -XmlRoot $xmlRoot -ExpectedCsvPath $expectedPath -OutputPath $outputPath -OnlyProblems
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+        Assert-Equal 1 $rows.Count 'OnlyProblems should omit OK rows.'
+        Assert-Equal '00000000000353' $rows[0].cnpj 'OnlyProblems should keep mismatch row.'
+    }
+
+    Invoke-Test 'xml regime auditor writes Portuguese grouped reports from classifier CSV' {
+        $root = New-TestRoot; $tempRoots += $root
+        $xmlRoot = Join-Path $root 'xml'
+        $expectedPath = Join-Path $root 'classifier.csv'
+        $outputPath = Join-Path $root 'audit.csv'
+        $problemPath = Join-Path $root 'problemas.csv'
+        $groupPath = Join-Path $root 'grupos.csv'
+
+        Write-TestFile -Path $expectedPath -Content @'
+ID,Nome,cnpj,regime_tributario,NF-e,NFC-e,NFS-e
+1,Cliente Simples,00000000000353,Simples Nacional,SIM,,
+2,Cliente Normal,00000000000868,Normal,,SIM,
+'@
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000353\NF-e\202604\normal.xml') -Content (New-TestNfeXml -Cnpj '00000000000353' -Crt '3' -IcmsXml '<ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS>' -Numero '303')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000868\NFC-e\202604\simples.xml') -Content (New-TestNfeXml -Cnpj '00000000000868' -Crt '1' -IcmsXml '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -Modelo '65' -Numero '868')
+
+        Invoke-XmlRegimeAuditorTest -XmlRoot $xmlRoot -ExpectedCsvPath $expectedPath -OutputPath $outputPath -ProblemReportPath $problemPath -GroupedReportPath $groupPath
+        $problems = @(Import-Csv -LiteralPath $problemPath -Delimiter ';')
+        $groups = @(Import-Csv -LiteralPath $groupPath -Delimiter ';')
+
+        Assert-Equal 2 $problems.Count 'problem report should include both mismatches.'
+        Assert-True (@($problems | Where-Object { $_.grupo_divergencia -eq 'Simples com XML Normal' -and $_.tipo_xml -eq 'NF-e' }).Count -eq 1) 'problem report must label Simples with Normal XML in Portuguese.'
+        Assert-True (@($problems | Where-Object { $_.grupo_divergencia -eq 'Normal com XML Simples' -and $_.tipo_xml -eq 'NFC-e' }).Count -eq 1) 'problem report must label Normal with Simples XML in Portuguese.'
+        Assert-True (@($groups | Where-Object { $_.grupo_divergencia -eq 'Simples com XML Normal' -and $_.tipo_xml -eq 'NF-e' -and $_.quantidade -eq '1' }).Count -eq 1) 'grouped report must group by divergence and XML type.'
+        Assert-True (@($groups | Where-Object { $_.grupo_divergencia -eq 'Normal com XML Simples' -and $_.tipo_xml -eq 'NFC-e' -and $_.quantidade -eq '1' }).Count -eq 1) 'grouped report must group Normal with Simples XML.'
+    }
+
+    Invoke-Test 'recent XML divergence report filters to last two months and includes CT-e' {
+        $root = New-TestRoot; $tempRoots += $root
+        $xmlRoot = Join-Path $root 'xml'
+        $expectedPath = Join-Path $root 'expected.csv'
+        $outputPath = Join-Path $root 'recent.csv'
+
+        Write-TestFile -Path $expectedPath -Content @'
+cnpj;regime_tributario;nome
+00000000000949;MEI;Cliente CT-e
+00000000001082;Normal;Cliente antigo
+'@
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000000949\CT-e\202605\cte.xml') -Content (New-TestCteXml -Cnpj '00000000000949' -IcmsXml '<ICMS00><CST>00</CST><vBC>100.00</vBC><pICMS>0.00</pICMS><vICMS>0.00</vICMS></ICMS00>' -Numero '949')
+        Write-TestFile -Path (Join-Path $xmlRoot '00000000001082\NF-e\202001\old.xml') -Content (New-TestNfeXml -Cnpj '00000000001082' -Crt '1' -IcmsXml '<ICMS><ICMSSN102><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -Numero '1082')
+
+        $scriptPath = Join-Path $ProjectRoot 'scripts\export-recent-xml-regime-diff.ps1'
+        & $scriptPath -ExpectedCsvPath $expectedPath -XmlRoot $xmlRoot -OutputPath $outputPath -MonthsBack 2 -Delimiter ';' | Out-Null
+        $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
+
+        Assert-Equal 1 $rows.Count 'recent divergence report should omit old-month mismatches.'
+        Assert-Equal '00000000000949' $rows[0].cnpj 'recent divergence report should keep the recent CT-e mismatch.'
+        Assert-Equal 'CT-e' $rows[0].tipo_xml 'recent divergence report should include CT-e evidence.'
+        Assert-Equal 'Simples com XML Normal' $rows[0].grupo_divergencia 'MEI with CT-e normal ICMS should be labeled for consultation.'
     }
 }
 finally {

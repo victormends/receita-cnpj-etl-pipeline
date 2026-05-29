@@ -78,6 +78,14 @@
     # ---------------------------------------------------------
     dbHost       = "localhost"
     dbName       = "postgres"
+
+    # ---------------------------------------------------------
+    # XML REGIME AUDIT (optional)
+    # Root folder containing per-CNPJ NF-e/NFC-e/NFS-e/CT-e XML directories.
+    # Leave empty to skip the recent divergence report at the end of each run.
+    # Can also be set via the CNPJ_XML_ROOT environment variable.
+    # ---------------------------------------------------------
+    xmlRoot      = ""             # e.g. "\\\\file-server\XML"
 }
 
 

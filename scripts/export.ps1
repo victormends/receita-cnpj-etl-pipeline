@@ -72,3 +72,18 @@ finally {
 $size = (Get-Item $outputFile).Length / 1MB
 Write-Host " OK ($([math]::Round($size,1)) MB)" -ForegroundColor Green
 Write-Host "`n CSV generated successfully!" -ForegroundColor Green
+
+$xmlRoot = ''
+foreach ($key in @('xmlRoot', 'XmlRoot', 'xmlAuditRoot', 'XmlAuditRoot')) {
+    if ($config.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$config[$key])) { $xmlRoot = [string]$config[$key]; break }
+}
+if ([string]::IsNullOrWhiteSpace($xmlRoot) -and -not [string]::IsNullOrWhiteSpace($env:CNPJ_XML_ROOT)) { $xmlRoot = $env:CNPJ_XML_ROOT }
+
+$diffScript = Join-Path $ScriptDir 'scripts\export-recent-xml-regime-diff.ps1'
+if (Test-Path -LiteralPath $diffScript -PathType Leaf) {
+    $diffPath = Join-Path $config.dirOut "cnpj_export_$($config.anoMes).xml-divergencias-recentes.csv"
+    & $diffScript -ExpectedCsvPath $outputFile -XmlRoot $xmlRoot -OutputPath $diffPath -MonthsBack 2 -Delimiter ';'
+}
+else {
+    Write-Host "Recent XML divergence report skipped: script not found: $diffScript" -ForegroundColor Yellow
+}

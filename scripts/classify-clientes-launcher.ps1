@@ -4,6 +4,8 @@ param(
     [string]$SimplesPath,
     [string]$OutputPath,
     [string]$EnrichmentPath,
+    [string]$ClassifiedInputPath,
+    [string]$XmlRoot,
     [string]$Delimiter = ';',
     [ValidateSet('Database', 'File')]
     [string]$Mode = 'Database'
@@ -22,6 +24,15 @@ function Wait-BeforeExit {
     [void][Console]::ReadLine()
 }
 
+function Read-ConsoleValue {
+    param([Parameter(Mandatory = $true)][string]$Prompt)
+
+    Write-Host -NoNewline "$Prompt`: "
+    $value = [Console]::ReadLine()
+    if ($null -eq $value) { return '' }
+    return $value
+}
+
 function Select-OpenFile {
     param([string]$Title)
 
@@ -32,7 +43,10 @@ function Select-OpenFile {
     $dialog.CheckFileExists = $true
     $dialog.Multiselect = $false
 
-    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return '' }
+    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+        return ''
+    }
+
     return $dialog.FileName
 }
 
@@ -46,7 +60,10 @@ function Select-SaveFile {
     $dialog.FileName = $DefaultFileName
     $dialog.OverwritePrompt = $true
 
-    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return '' }
+    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+        return ''
+    }
+
     return $dialog.FileName
 }
 
@@ -60,8 +77,14 @@ function Read-Delimiter {
 }
 
 function Get-LauncherDirectory {
-    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $PSScriptRoot }
-    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) { return (Split-Path -Parent $PSCommandPath) }
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        return $PSScriptRoot
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        return (Split-Path -Parent $PSCommandPath)
+    }
+
     if ($MyInvocation.MyCommand.PSObject.Properties.Name -contains 'Path' -and -not [string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
         return (Split-Path -Parent $MyInvocation.MyCommand.Path)
     }
@@ -95,27 +118,65 @@ try {
     Write-Host '===================================================' -ForegroundColor Cyan
     Write-Host ' CLIENT STAGING BUILDER' -ForegroundColor Cyan
     Write-Host '===================================================' -ForegroundColor Cyan
-    Write-Host 'Provide the client XLSX/CSV. A cleaned operational enrichment CSV is used automatically when present.' -ForegroundColor Yellow
-    Write-Host 'Receita Simples CSV is optional; cancel its dialog to skip regime classification.' -ForegroundColor Yellow
+    Write-Host 'Provide the active clients XLSX/CSV. The bundled cleaned enrichment CSV is used automatically when present.' -ForegroundColor Yellow
+    Write-Host 'If Downloads\clientes_classificados.csv exists, it is used automatically for MEI/Simples/Normal.' -ForegroundColor Yellow
+    Write-Host 'Government CNAE/categories are attached from PostgreSQL when available.' -ForegroundColor Yellow
     Write-Host '-------------------------------------------------' -ForegroundColor Gray
 
-    if ([string]::IsNullOrWhiteSpace($InputPath)) { $InputPath = Select-OpenFile 'Select the client XLSX or CSV file' }
-    if ([string]::IsNullOrWhiteSpace($SimplesPath)) { $SimplesPath = Select-OpenFile 'Select the Receita Simples CSV file, or cancel to skip regime classification' }
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Select-SaveFile 'Choose the PostgreSQL staging output CSV file' 'clientes_postgres_staging.csv' }
-    if ([string]::IsNullOrWhiteSpace($Delimiter)) { $Delimiter = Read-Delimiter ';' }
+    if ([string]::IsNullOrWhiteSpace($InputPath)) {
+        $InputPath = Select-OpenFile 'Select the client XLSX or CSV file'
+    }
 
-    if ([string]::IsNullOrWhiteSpace($InputPath)) { throw 'Client CSV path is required.' }
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) { throw 'Output CSV path is required.' }
+    if ([string]::IsNullOrWhiteSpace($ClassifiedInputPath)) {
+        $defaultClassified = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\clientes_classificados.csv'
+        if (Test-Path -LiteralPath $defaultClassified -PathType Leaf) {
+            $ClassifiedInputPath = $defaultClassified
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($SimplesPath) -and [string]::IsNullOrWhiteSpace($ClassifiedInputPath)) {
+        $SimplesPath = Select-OpenFile 'Select the Receita Simples CSV file, or cancel to skip regime classification'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        $OutputPath = Select-SaveFile 'Choose the normalized PostgreSQL output CSV file' 'clientes_postgres_normalizado.csv'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Delimiter)) {
+        $Delimiter = Read-Delimiter ';'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($InputPath)) {
+        throw 'Client CSV path is required.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        throw 'Output CSV path is required.'
+    }
 
     if (Test-Path -LiteralPath $stagingBuilder -PathType Leaf) {
-        $builderArgs = @{ InputPath = $InputPath; OutputPath = $OutputPath; Delimiter = $Delimiter; Mode = $Mode }
+        $builderArgs = @{
+            InputPath = $InputPath
+            OutputPath = $OutputPath
+            Delimiter = $Delimiter
+            Mode = $Mode
+        }
         if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $builderArgs.SimplesPath = $SimplesPath }
         if (-not [string]::IsNullOrWhiteSpace($EnrichmentPath)) { $builderArgs.EnrichmentPath = $EnrichmentPath }
+        if (-not [string]::IsNullOrWhiteSpace($ClassifiedInputPath)) { $builderArgs.ClassifiedInputPath = $ClassifiedInputPath }
+        if (-not [string]::IsNullOrWhiteSpace($XmlRoot)) { $builderArgs.XmlRoot = $XmlRoot }
+        $builderArgs.IncludeGovernmentData = $true
         & $stagingBuilder @builderArgs
     }
     else {
-        $classifierArgs = @{ InputPath = $InputPath; OutputPath = $OutputPath; Delimiter = $Delimiter; Mode = $Mode }
+        $classifierArgs = @{
+            InputPath = $InputPath
+            OutputPath = $OutputPath
+            Delimiter = $Delimiter
+            Mode = $Mode
+        }
         if (-not [string]::IsNullOrWhiteSpace($SimplesPath)) { $classifierArgs.SimplesPath = $SimplesPath }
+        if (-not [string]::IsNullOrWhiteSpace($XmlRoot)) { $classifierArgs.XmlRoot = $XmlRoot }
         & $classifier @classifierArgs
     }
 }
@@ -125,5 +186,7 @@ catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
 }
 finally {
-    if (-not $launchedWithArguments) { Wait-BeforeExit }
+    if (-not $launchedWithArguments) {
+        Wait-BeforeExit
+    }
 }

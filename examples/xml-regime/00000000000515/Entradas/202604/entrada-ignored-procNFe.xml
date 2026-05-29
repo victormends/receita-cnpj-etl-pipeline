@@ -1,0 +1,1 @@
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe"><NFe><infNFe><ide><mod>55</mod><nNF>505</nNF><dhEmi>2026-04-16T14:00:00-03:00</dhEmi></ide><emit><CNPJ>99999999000199</CNPJ><xNome>FORNECEDOR EXEMPLO LTDA</xNome><CRT>3</CRT></emit><det nItem="1"><imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST></ICMS00></ICMS></imposto></det></infNFe></NFe></nfeProc>
