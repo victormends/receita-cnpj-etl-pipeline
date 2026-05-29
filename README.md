@@ -1,5 +1,7 @@
 # Receita CNPJ ETL Pipeline
 
+[![CI](https://github.com/victormends/receita-cnpj-etl-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/victormends/receita-cnpj-etl-pipeline/actions/workflows/ci.yml)
+
 Windows-first PowerShell ETL pipeline for Receita Federal CNPJ open data using PostgreSQL.
 
 The project downloads public CNPJ datasets, prepares the raw files for import, loads them into PostgreSQL, applies configurable filters, enriches the result with supporting tables, and exports a filtered CSV for downstream analysis or sample workflows.
