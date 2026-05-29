@@ -189,6 +189,28 @@ powershell -ExecutionPolicy Bypass -File .\scripts\packaging\build-classifier-ex
 
 Executable builds are not committed to this repository. Publish or distribute the generated launcher as a release ZIP together with `classify-clientes.ps1`, `build-client-staging.ps1`, `config.example.ps1`, and `lib\preflight.ps1`.
 
+## XML Regime Auditor
+
+`scripts/audit-xml-regime.ps1` checks whether the latest XML invoices for each company match the expected tax regime (Simples Nacional, MEI, or Normal) using fiscal XML evidence — `<CRT>`, ICMS group structure, and NFS-e `opSimpNac` field.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\audit-xml-regime.ps1 `
+  -XmlRoot '\\your-server\XML' `
+  -ExpectedCsvPath .\output\clientes_classificados.csv `
+  -OutputPath .\output\xml-regime-audit.csv `
+  -ProblemReportPath .\output\xml-regime-problemas.csv `
+  -GroupedReportPath .\output\xml-regime-agrupado.csv `
+  -IncludeTypes 'NF-e,NFC-e,NFS-e,CT-e' `
+  -ThrottleLimit 8 `
+  -OnlyProblems
+```
+
+Supported invoice types: NF-e, NFC-e (primary evidence via `<CRT>`), NFS-e (basic national layout via `opSimpNac`), CT-e (medium-confidence via ICMS group structure). MDF-e is excluded — it carries no direct regime evidence.
+
+When `xmlRoot` is set in `config.ps1` (or via the `CNPJ_XML_ROOT` environment variable), the classifier and staging builder automatically generate a `*.xml-divergencias-recentes.csv` file beside the main output after each run. This report includes only recent invoices (current and previous month by default) where the XML regime does not match the classification.
+
+See `docs/xml-regime-auditor.md` for the full rule set, evidence hierarchy, output schema, and synthetic examples under `examples/xml-regime/`.
+
 ## Running Tests
 
 Tests do not require a committed `config.ps1` and do not run the full ETL.

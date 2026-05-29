@@ -69,26 +69,9 @@ CREATE TABLE IF NOT EXISTS estabelecimentos_categorias (
     PRIMARY KEY (cnpj, categoria, cnae_match, cnae_origem)
 );
 
--- 5. Public-data lookup for provided active-client examples, independent from lead filters.
--- Existing local databases that used the pre-cleanup public identifier are migrated in place.
-DO $$
-BEGIN
-    IF to_regclass('public.active_clients_public_enrichment') IS NULL
-       AND to_regclass('public.clientes_ativos_governo') IS NOT NULL
-       AND EXISTS (
-           SELECT 1
-           FROM pg_class c
-           JOIN pg_namespace n ON n.oid = c.relnamespace
-           WHERE n.nspname = 'public'
-             AND c.relname = 'clientes_ativos_governo'
-             AND c.relkind = 'r'
-       ) THEN
-        ALTER TABLE clientes_ativos_governo RENAME TO active_clients_public_enrichment;
-    END IF;
-END $$;
-
--- This persists CNAE data for the provided CNPJ list so the classifier can enrich it later.
-CREATE TABLE IF NOT EXISTS active_clients_public_enrichment (
+-- 5. Government lookup for existing active clients, independent from CRM lead filters.
+-- This persists CNAE data for the user's current customer base so the classifier can enrich them later.
+CREATE TABLE IF NOT EXISTS clientes_ativos_governo (
     cnpj VARCHAR(14) PRIMARY KEY,
     cnpj_basico VARCHAR(8),
     razao_social TEXT,
@@ -104,10 +87,6 @@ CREATE TABLE IF NOT EXISTS active_clients_public_enrichment (
     municipio VARCHAR(4),
     atualizado_em TIMESTAMP DEFAULT NOW()
 );
-
--- Backward-compatible alias for scripts or ad-hoc queries that still use the old public identifier.
-CREATE OR REPLACE VIEW clientes_ativos_governo AS
-SELECT * FROM active_clients_public_enrichment;
 
 -- 6. Import log
 CREATE TABLE IF NOT EXISTS import_log (
@@ -129,14 +108,13 @@ CREATE INDEX IF NOT EXISTS idx_import_log_data ON import_log(data_import);
 CREATE INDEX IF NOT EXISTS idx_cnae_categoria_map_active ON cnae_categoria_map(ativo, match_type, cnae_inicio, cnae_fim);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_categorias_cnpj ON estabelecimentos_categorias(cnpj);
 CREATE INDEX IF NOT EXISTS idx_estabelecimentos_categorias_categoria ON estabelecimentos_categorias(categoria);
-CREATE INDEX IF NOT EXISTS idx_active_clients_public_enrichment_cnpj_basico ON active_clients_public_enrichment(cnpj_basico);
-CREATE INDEX IF NOT EXISTS idx_active_clients_public_enrichment_cnae ON active_clients_public_enrichment(cnae_fiscal_principal);
+CREATE INDEX IF NOT EXISTS idx_clientes_ativos_governo_cnpj_basico ON clientes_ativos_governo(cnpj_basico);
+CREATE INDEX IF NOT EXISTS idx_clientes_ativos_governo_cnae ON clientes_ativos_governo(cnae_fiscal_principal);
 
 -- 8. Comments
 COMMENT ON TABLE estabelecimentos_crm IS 'Qualified CNPJ leads for CRM - PR/SC region';
 COMMENT ON TABLE empresas_dados IS 'Company legal name data used for joins';
 COMMENT ON TABLE cnae_categoria_map IS 'CNAE-to-business-category rules based only on Receita/government CNAE data';
 COMMENT ON TABLE estabelecimentos_categorias IS 'Business category matches generated from establishment CNAE fields';
-COMMENT ON TABLE active_clients_public_enrichment IS 'Public CNAE/company lookup for provided active-client examples, captured during import before cleanup';
-COMMENT ON VIEW clientes_ativos_governo IS 'Compatibility view for active_clients_public_enrichment';
+COMMENT ON TABLE clientes_ativos_governo IS 'Government CNAE/company lookup for existing active clients, captured during import before cleanup';
 COMMENT ON TABLE import_log IS 'Execution log for pipeline runs';

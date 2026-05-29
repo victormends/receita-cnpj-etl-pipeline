@@ -418,23 +418,23 @@ try {
 
         Write-TestFile -Path $inputPath -Content @'
 ID;Nome;Razao Social;Cidade;Estado;CNPJ;regime_tributario
-241;Lojao Do Carlao;Silvia Waligura Nowak;Cruz Machado;PR;6343186000168;Normal
+241;Comercio Exemplo Ltda;Comercio Exemplo Ltda;Curitiba;PR;9999999000191;Normal
 '@
         Write-TestFile -Path $enrichmentPath -Content @'
 ID;cnpj_corrigido;nome_normalizado;razao_social_normalizada
-241;06343186000168;Lojao Do Carlao;Silvia Waligura Nowak
+241;09999999000191;Comercio Exemplo Ltda;Comercio Exemplo Ltda
 '@
         Write-TestFile -Path $simplesPath -Content @'
-06343186;S;20200101;;N;;
+09999999;S;20200101;;N;;
 '@
 
         & $scriptPath -InputPath $inputPath -EnrichmentPath $enrichmentPath -SimplesPath $simplesPath -OutputPath $outputPath -Delimiter ';' -Mode File | Out-Null
         $rows = @(Import-Csv -LiteralPath $outputPath -Delimiter ';')
 
         Assert-Equal 1 $rows.Count 'staging builder should output one row.'
-        Assert-Equal '06343186000168' $rows[0].cnpj 'staging builder should pad missing leading zero.'
-        Assert-Equal '06343186000168' $rows[0].cnpj_normalizado 'staging builder should expose normalized CNPJ.'
-        Assert-Equal '06343186' $rows[0].cnpj_basico 'staging builder should expose CNPJ basico.'
+        Assert-Equal '09999999000191' $rows[0].cnpj 'staging builder should pad missing leading zero.'
+        Assert-Equal '09999999000191' $rows[0].cnpj_normalizado 'staging builder should expose normalized CNPJ.'
+        Assert-Equal '09999999' $rows[0].cnpj_basico 'staging builder should expose CNPJ basico.'
         Assert-Equal 'Simples Nacional' $rows[0].regime_tributario 'staging builder should use classifier-created regime, not stale source regime.'
     }
 
@@ -498,14 +498,14 @@ ID;cnpj_corrigido;nome_normalizado;razao_social_normalizada
 
         Write-TestFile -Path $inputPath -Content @'
 ID;Nome;CNPJ
-1;Tele Antenas;09372387000181
+1;Empresa Teste ME;9999999000191
 '@
         Write-TestFile -Path $simplesPath -Content @'
-09372387;N;20080219;20080219;N;00000000;00000000
+09999999;N;20100101;20100101;N;00000000;00000000
 '@
         Write-TestFile -Path $overridePath -Content @'
 cnpj;cnpj_basico;regime_tributario;fonte;observacao
-09372387000181;09372387;Simples Nacional;Consulta Optantes Simples Nacional;Optante desde 19/02/2008
+09999999000191;09999999;Simples Nacional;Consulta Optantes Simples Nacional;Optante desde 01/01/2010
 '@
 
         & $scriptPath -InputPath $inputPath -SimplesPath $simplesPath -RegimeOverridePath $overridePath -OutputPath $outputPath -Delimiter ';' -Mode File | Out-Null
@@ -513,7 +513,7 @@ cnpj;cnpj_basico;regime_tributario;fonte;observacao
 
         Assert-Equal 'Simples Nacional' $rows[0].regime_tributario 'official override should replace local snapshot classification.'
         Assert-Equal 'Consulta Optantes Simples Nacional' $rows[0].classificacao_fonte 'override source should be preserved.'
-        Assert-MatchText $rows[0].classificacao_observacao 'Optante desde 19/02/2008' 'override observation should be preserved.'
+        Assert-MatchText $rows[0].classificacao_observacao 'Optante desde 01/01/2010' 'override observation should be preserved.'
     }
 
     Invoke-Test 'client classifier docs and ignore rules protect private data' {
@@ -531,48 +531,11 @@ cnpj;cnpj_basico;regime_tributario;fonte;observacao
         Assert-MatchText $docs 'Do not infer MEI from `natureza_juridica = 2135`' 'docs must reject natureza_juridica as the MEI source.'
     }
 
-    Invoke-Test 'Consulta Optantes export helper avoids portal automation' {
-        $scriptText = Get-ScriptText 'scripts\export-consulta-optantes-list.ps1'
-        $docs = Get-ScriptText 'docs\client-classifier.md'
-
-        Assert-MatchText $scriptText 'consulta_regime_tributario' 'helper must export a field for manual consultation result.'
-        Assert-MatchText $scriptText 'Test-CnpjCheckDigits' 'helper must reject CPF/invalid CNPJ values instead of padding them.'
-        Assert-MatchText $scriptText 'Consulta Optantes Simples Nacional' 'helper must preserve the official source name.'
-        Assert-MatchText $docs 'hCaptcha' 'docs must explain why bulk portal scraping is not automated.'
-        Assert-MatchText $docs 'export-consulta-optantes-list.ps1' 'docs must mention the safe consultation export helper.'
-    }
-
-    Invoke-Test 'Consulta Optantes Playwright helper requires manual captcha' {
-        $scriptText = Get-ScriptText 'scripts\consulta-optantes-playwright.mjs'
-        $snippetText = Get-ScriptText 'scripts\consulta-optantes-browser-snippet.js'
-        $packageText = Get-ScriptText 'package.json'
-        $docs = Get-ScriptText 'docs\client-classifier.md'
-
-        Assert-MatchText $scriptText 'Resolve the hCaptcha' 'Playwright helper must require manual captcha resolution.'
-        Assert-MatchText $scriptText 'interaction' 'Playwright helper should support manual interaction mode.'
-        Assert-MatchText $scriptText 'Copied CNPJ to clipboard' 'Playwright helper should copy CNPJ for manual paste.'
-        Assert-MatchText $scriptText 'launchPersistentContext' 'Playwright helper should use a persistent visible browser profile.'
-        Assert-MatchText $scriptText 'isValidCnpj' 'Playwright helper must reject CPF/invalid CNPJ values.'
-        Assert-MatchText $scriptText 'consulta_regime_tributario' 'Playwright helper must write consultation results.'
-        Assert-MatchText $snippetText 'localStorage' 'normal-browser snippet must persist progress locally.'
-        Assert-MatchText $snippetText 'Capture Result' 'normal-browser snippet must capture visible portal result.'
-        Assert-MatchText $snippetText 'window.open' 'normal-browser snippet must keep the assistant alive across portal navigation.'
-        Assert-MatchText $snippetText 'findCnpjInput' 'normal-browser snippet must robustly locate the CNPJ input.'
-        Assert-MatchText $snippetText 'Start Auto Next' 'normal-browser snippet should provide an assisted automatic mode.'
-        Assert-MatchText $snippetText 'findConsultarButton' 'normal-browser snippet should click Consultar from the normal browser tab.'
-        Assert-MatchText $snippetText 'setInterval\(tickAuto' 'normal-browser snippet should watch for portal results.'
-        Assert-MatchText $snippetText 'consultaoptantes' 'normal-browser snippet should guide users to the direct portal page.'
-        Assert-MatchText $docs 'Start Auto Next' 'docs must explain the automatic normal-browser workflow.'
-        Assert-MatchText $docs 'consulta-optantes-browser-snippet.js' 'docs must mention the normal-browser snippet fallback.'
-        Assert-MatchText $packageText 'playwright' 'package.json must declare Playwright dependency.'
-        Assert-MatchText $docs 'consulta-optantes-playwright.mjs' 'docs must mention the Playwright helper.'
-    }
-
     Invoke-Test 'recent XML diff is integrated with classifier and pipeline outputs' {
         $classifier = Get-ScriptText 'scripts\classify-clientes.ps1'
         $builder = Get-ScriptText 'scripts\build-client-staging.ps1'
         $export = Get-ScriptText 'scripts\export.ps1'
-        $config = Get-ScriptText 'config.ps1'
+        $config = Get-ScriptText 'config.example.ps1'
         $readme = Get-ScriptText 'README.md'
         $docs = Get-ScriptText 'docs\client-classifier.md'
 

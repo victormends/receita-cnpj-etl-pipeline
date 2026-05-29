@@ -34,7 +34,7 @@ If a documented official consultation contradicts the local Simples snapshot, pa
 
 ```csv
 cnpj;cnpj_basico;regime_tributario;fonte;observacao
-09372387000181;09372387;Simples Nacional;Consulta Optantes Simples Nacional;Optante desde 19/02/2008
+09999999000191;09999999;Simples Nacional;Consulta Optantes Simples Nacional;Optante desde 01/01/2010
 ```
 
 Overrides are applied after the Simples file and should only be used when the source and observation identify the external authority.

@@ -16,6 +16,8 @@ LIMPO_*
 *.csv
 !examples/
 !examples/*.sample.csv
+*.xml
+!examples/**/*.xml
 *.xlsx
 *.xls
 

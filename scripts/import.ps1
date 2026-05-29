@@ -266,8 +266,8 @@ CREATE UNLOGGED TABLE tmp_municipios (codigo VARCHAR(4), nome TEXT);
 DROP TABLE IF EXISTS tmp_cnpj_basico_alvo CASCADE;
 CREATE UNLOGGED TABLE tmp_cnpj_basico_alvo (cnpj_basico VARCHAR(8) PRIMARY KEY);
 
-DROP TABLE IF EXISTS tmp_active_client_targets CASCADE;
-CREATE UNLOGGED TABLE tmp_active_client_targets (cnpj VARCHAR(14) PRIMARY KEY, cnpj_basico VARCHAR(8));
+DROP TABLE IF EXISTS tmp_clientes_ativos_alvo CASCADE;
+CREATE UNLOGGED TABLE tmp_clientes_ativos_alvo (cnpj VARCHAR(14) PRIMARY KEY, cnpj_basico VARCHAR(8));
 "@
 $resetDescription = if ($resetFinalTablesOnImport) { 'Reset final tables and create staging tables' } else { 'Drop/Create staging tables' }
 Run-Sql $sqlTemp $resetDescription
@@ -281,7 +281,7 @@ if ($captureActiveClients) {
         Write-Host "`n[1b/7] Loading active-client CNPJ target list..." -ForegroundColor Yellow
         $delimiter = Get-CsvDelimiterLocal -Path $activeClientsPath
         $activeRows = @(Import-Csv -LiteralPath $activeClientsPath -Delimiter $delimiter -Encoding UTF8)
-        $targetPath = Join-Path $config.dirTemp 'active_client_targets.csv'
+        $targetPath = Join-Path $config.dirTemp 'clientes_ativos_alvo.csv'
         $activeTargets = foreach ($row in $activeRows) {
             $cnpj = Normalize-CnpjLocal -Value (Get-PropValueLocal -Row $row -Names @('cnpj_normalizado', 'cnpj', 'CNPJ', 'cnpj_corrigido'))
             if ($cnpj -match '^\d{14}$') { [pscustomobject]@{ cnpj = $cnpj; cnpj_basico = $cnpj.Substring(0, 8) } }
@@ -293,10 +293,10 @@ if ($captureActiveClients) {
         }
         else {
             $activeTargets | Export-Csv -LiteralPath $targetPath -Delimiter ';' -Encoding UTF8 -NoTypeInformation
-            Run-Sql "COPY tmp_active_client_targets FROM '$(ConvertTo-PsqlPathLiteral -Path $targetPath)' WITH (FORMAT CSV, HEADER TRUE, DELIMITER ';', ENCODING 'UTF8', NULL ''); CREATE INDEX IF NOT EXISTS idx_tmp_active_client_targets_basico ON tmp_active_client_targets(cnpj_basico); ANALYZE tmp_active_client_targets; TRUNCATE TABLE active_clients_public_enrichment;" "Load active client targets ($($activeTargets.Count) CNPJs)"
-            $loadedActiveTargets = Run-SqlQuery "SELECT COUNT(*) FROM tmp_active_client_targets;" 'Verify active client target load'
+            Run-Sql "COPY tmp_clientes_ativos_alvo FROM '$(ConvertTo-PsqlPathLiteral -Path $targetPath)' WITH (FORMAT CSV, HEADER TRUE, DELIMITER ';', ENCODING 'UTF8', NULL ''); CREATE INDEX IF NOT EXISTS idx_tmp_clientes_ativos_alvo_basico ON tmp_clientes_ativos_alvo(cnpj_basico); ANALYZE tmp_clientes_ativos_alvo; TRUNCATE TABLE clientes_ativos_governo;" "Load active client targets ($($activeTargets.Count) CNPJs)"
+            $loadedActiveTargets = Run-SqlQuery "SELECT COUNT(*) FROM tmp_clientes_ativos_alvo;" 'Verify active client target load'
             Write-Host "    Active client CNPJ targets loaded: $loadedActiveTargets" -ForegroundColor Gray
-            Remove-CnpjArtifactSafe -Config $config -Path $targetPath -AllowedRoot $config.dirTemp -AllowedPatterns @('active_client_targets.csv') -Reason 'active client target load complete' | Out-Null
+            Remove-CnpjArtifactSafe -Config $config -Path $targetPath -AllowedRoot $config.dirTemp -AllowedPatterns @('clientes_ativos_alvo.csv') -Reason 'active client target load complete' | Out-Null
         }
     }
 }
@@ -324,7 +324,7 @@ $(New-CopyFromFileSql -TableName 'tmp_estabelecimentos_stage' -Path $f)
 
     if ($captureActiveClients) {
         $sqlCaptureActiveEstabelecimentos = @"
-INSERT INTO active_clients_public_enrichment (
+INSERT INTO clientes_ativos_governo (
     cnpj, cnpj_basico, nome_fantasia, situacao_cadastral, data_inicio_atividade,
     cnae_fiscal_principal, cnae_fiscal_secundaria, uf, municipio, atualizado_em
 )
@@ -340,7 +340,7 @@ SELECT
     t.municipio,
     NOW()
 FROM tmp_estabelecimentos_stage t
-JOIN tmp_active_client_targets a ON a.cnpj = LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0') || LPAD(regexp_replace(t.cnpj_ordem, '\D', '', 'g'), 4, '0') || LPAD(regexp_replace(t.cnpj_dv, '\D', '', 'g'), 2, '0')
+JOIN tmp_clientes_ativos_alvo a ON a.cnpj = LPAD(regexp_replace(t.cnpj_basico, '\D', '', 'g'), 8, '0') || LPAD(regexp_replace(t.cnpj_ordem, '\D', '', 'g'), 4, '0') || LPAD(regexp_replace(t.cnpj_dv, '\D', '', 'g'), 2, '0')
 WHERE t.situacao_cadastral = '02'
 ON CONFLICT (cnpj) DO UPDATE SET
     cnpj_basico = EXCLUDED.cnpj_basico,
@@ -492,7 +492,7 @@ WITH normalized AS (
         t.porte_empresa
     FROM tmp_empresas_stage t
 )
-UPDATE active_clients_public_enrichment c
+UPDATE clientes_ativos_governo c
 SET razao_social = n.razao_social,
     natureza_juridica = n.natureza_juridica,
     capital_social = n.capital_social,
