@@ -6,6 +6,12 @@ PowerShell + PostgreSQL ETL pipeline for Windows targeting Receita Federal CNPJ 
 
 The project downloads public CNPJ datasets, prepares the raw files for import, loads them into PostgreSQL, applies configurable filters, enriches the result with supporting tables, and exports a filtered CSV for downstream analysis or sample workflows.
 
+## Origin & Field Results
+
+Built as a PL/pgSQL + PowerShell ETL for Receita Federal CNPJ open datasets (`15 GB+`, `70M+` records). Pairing staged `UNLOGGED` load tables with parallel null-byte cleanup and batch ordering cut full-load runtime by `~60%` (`~4h` to `~1h30` in the original environment).
+
+> **Engineering caveat:** `UNLOGGED` staging tables trade crash durability during the load window for write throughput. An unclean PostgreSQL shutdown truncates unlogged staging tables and requires rerunning the import stage from cleaned `LIMPO_*` artifacts. Field timings are environment-dependent (CPU, disk IOPS, PostgreSQL configuration, and dataset volume).
+
 ## What It Does
 
 - Detects the latest available Receita Federal CNPJ dataset folder.
@@ -19,12 +25,6 @@ The project downloads public CNPJ datasets, prepares the raw files for import, l
 - Classifies existing client lists from `.xlsx` or `.csv` as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using Receita's Simples dataset.
 - Builds PostgreSQL-ready sample client staging CSVs by combining a base client file, optional cleaned enrichment, optional Simples data, and optional government CNAE categories.
 - Includes tests for pipeline safety checks and script behavior.
-
-## Origin & Field Results
-
-Built as a PL/pgSQL + PowerShell ETL for Receita Federal CNPJ open datasets (`15 GB+`, `70M+` records). Pairing staged `UNLOGGED` load tables with parallel null-byte cleanup and batch ordering cut full-load runtime by `~60%` (`~4h` to `~1h30` in the original environment).
-
-> **Engineering caveat:** `UNLOGGED` staging tables trade crash durability during the load window for write throughput. An unclean PostgreSQL shutdown truncates unlogged staging tables and requires rerunning the import stage from cleaned `LIMPO_*` artifacts. Field timings are environment-dependent (CPU, disk IOPS, PostgreSQL configuration, and dataset volume).
 
 ## Pipeline Architecture
 
@@ -231,7 +231,7 @@ powershell -NoProfile -File .\tests\run-tests.ps1
 
 ## Legal & Data Protection (LGPD) Notice
 
-While Receita Federal CNPJ open datasets are public registry data, MEI (Microempreendedor Individual) records often correspond to natural persons and include personal names, residential or business addresses, and phone numbers. Under Brazil's General Data Protection Law (LGPD), operators must enforce purpose limitation, data minimization, and explicit exclusion filters (such as the pipeline's non-MEI filter excluding legal nature code `2135`) before any downstream analytical or CRM use.
+While Receita Federal CNPJ open datasets are public registry data, sole-proprietor and MEI (Microempreendedor Individual) records often correspond to natural persons and include personal names, residential or business addresses, and phone numbers. Under Brazil's General Data Protection Law (LGPD), operators must enforce purpose limitation, data minimization, and explicit exclusion filters before any downstream analytical or CRM use. For example, during import the pipeline excludes Receita legal nature code `2135` ("Empresário (Individual)", which encompasses both MEI and non-MEI sole proprietors rather than exclusively MEI), and when `filterSimplesNacional` is enabled it filters MEI rows separately using `opcao_pelo_mei` / `Simples Nacional` status.
 
 ## Data Safety
 
