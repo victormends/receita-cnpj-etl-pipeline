@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS clientes_staging (
     flag_postgres_atualizado_sem_replicacao boolean,
     flag_multiplos_computadores boolean,
     flag_sistema_web boolean,
-    flag_sistema_deluito_contador boolean,
+    flag_sistema_contador boolean,
     cnae_fiscal_principal text,
     cnae_fiscal_secundaria text,
     categoria_principal text,

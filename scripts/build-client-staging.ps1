@@ -1,4 +1,4 @@
-# =============================================================
+﻿# =============================================================
 # build-client-staging.ps1 - Build PostgreSQL-ready existing-client staging CSV
 # =============================================================
 
@@ -102,16 +102,16 @@ function Invoke-RecentXmlDiffIfConfigured {
 
 function Resolve-DefaultEnrichmentPath {
     $candidates = @(
-        (Join-Path $scriptRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
-        (Join-Path $projectRoot 'data\Clientes_A_limpo_cnpj_corrigido.csv'),
-        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\Clientes_A_limpo_cnpj_corrigido.csv')
+        (Join-Path $scriptRoot 'data\operational-enrichment.csv'),
+        (Join-Path $projectRoot 'data\operational-enrichment.csv'),
+        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\operational-enrichment.csv')
     )
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
 
-    throw 'Enrichment CSV was not provided and the default Clientes_A_limpo_cnpj_corrigido.csv was not found beside the executable, in project data, or in Downloads.'
+    throw 'Enrichment CSV was not provided and the default operational-enrichment.csv was not found beside the executable, in project data, or in Downloads.'
 }
 
 function Normalize-DigitsLocal {
@@ -548,7 +548,7 @@ foreach ($base in $classifiedRows) {
     Add-ColumnValue $auditRow 'flag_postgres_atualizado_sem_replicacao' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Postgres atualizado sem replicação')) } else { '' })
     Add-ColumnValue $auditRow 'flag_multiplos_computadores' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Múltiplos computadores')) } else { '' })
     Add-ColumnValue $auditRow 'flag_sistema_web' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema web')) } else { '' })
-    Add-ColumnValue $auditRow 'flag_sistema_deluito_contador' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema Deluito contador')) } else { '' })
+    Add-ColumnValue $auditRow 'flag_sistema_contador' $(if ($enriched) { Convert-ToPgBoolText (Get-PropValue -Row $enriched -Names @('Sistema contador')) } else { '' })
     Add-ColumnValue $auditRow 'cnae_fiscal_principal' (Get-PropValue -Row $gov -Names @('cnae_fiscal_principal'))
     Add-ColumnValue $auditRow 'cnae_fiscal_secundaria' (Get-PropValue -Row $gov -Names @('cnae_fiscal_secundaria'))
     Add-ColumnValue $auditRow 'categoria_principal' (Get-PropValue -Row $gov -Names @('categoria_principal'))

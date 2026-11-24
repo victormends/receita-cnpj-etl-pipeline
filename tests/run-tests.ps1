@@ -697,7 +697,9 @@ cnpj;regime_tributario;nome
 00000000000949;MEI;Cliente CT-e
 00000000001082;Normal;Cliente antigo
 '@
-        Write-TestFile -Path (Join-Path $xmlRoot '00000000000949\CT-e\202605\cte.xml') -Content (New-TestCteXml -Cnpj '00000000000949' -IcmsXml '<ICMS00><CST>00</CST><vBC>100.00</vBC><pICMS>0.00</pICMS><vICMS>0.00</vICMS></ICMS00>' -Numero '949')
+        $recentMonth = (Get-Date).ToString('yyyyMM')
+        $recentDhEmi = (Get-Date).ToString('yyyy-MM-ddT10:00:00-03:00')
+        Write-TestFile -Path (Join-Path $xmlRoot "00000000000949\CT-e\$recentMonth\cte.xml") -Content (New-TestCteXml -Cnpj '00000000000949' -IcmsXml '<ICMS00><CST>00</CST><vBC>100.00</vBC><pICMS>0.00</pICMS><vICMS>0.00</vICMS></ICMS00>' -DhEmi $recentDhEmi -Numero '949')
         Write-TestFile -Path (Join-Path $xmlRoot '00000000001082\NF-e\202001\old.xml') -Content (New-TestNfeXml -Cnpj '00000000001082' -Crt '1' -IcmsXml '<ICMS><ICMSSN102><CSOSN>102</CSOSN></ICMSSN102></ICMS>' -Numero '1082')
 
         $scriptPath = Join-Path $ProjectRoot 'scripts\export-recent-xml-regime-diff.ps1'

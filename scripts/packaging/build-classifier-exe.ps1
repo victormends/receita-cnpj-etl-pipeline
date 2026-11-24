@@ -12,7 +12,7 @@ $classifierScript = Join-Path $projectRoot 'scripts\classify-clientes.ps1'
 $stagingBuilderScript = Join-Path $projectRoot 'scripts\build-client-staging.ps1'
 $configScript = Join-Path $projectRoot 'config.ps1'
 $preflightScript = Join-Path $projectRoot 'scripts\lib\preflight.ps1'
-$defaultEnrichmentScript = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\Clientes_A_limpo_cnpj_corrigido.csv'
+$defaultEnrichmentScript = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\operational-enrichment.csv'
 $resolvedIcon = (Resolve-Path -LiteralPath $IconPath).Path
 $resolvedOutputDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
     [System.IO.Path]::GetFullPath($OutputDir)
@@ -85,8 +85,8 @@ if (Test-Path -LiteralPath $defaultEnrichmentScript -PathType Leaf) {
     if (-not (Test-Path -LiteralPath $dataOutputDir)) {
         New-Item -ItemType Directory -Path $dataOutputDir | Out-Null
     }
-    Copy-Item -LiteralPath $defaultEnrichmentScript -Destination (Join-Path $dataOutputDir 'Clientes_A_limpo_cnpj_corrigido.csv') -Force
-    Write-Host "Copied default enrichment CSV: $(Join-Path $dataOutputDir 'Clientes_A_limpo_cnpj_corrigido.csv')"
+    Copy-Item -LiteralPath $defaultEnrichmentScript -Destination (Join-Path $dataOutputDir 'operational-enrichment.csv') -Force
+    Write-Host "Copied default enrichment CSV: $(Join-Path $dataOutputDir 'operational-enrichment.csv')"
 }
 
 $libOutputDir = Join-Path $resolvedOutputDir 'lib'

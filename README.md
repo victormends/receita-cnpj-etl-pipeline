@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/victormends/receita-cnpj-etl-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/victormends/receita-cnpj-etl-pipeline/actions/workflows/ci.yml)
 
-Windows-first PowerShell ETL pipeline for Receita Federal CNPJ open data using PostgreSQL.
+PowerShell + PostgreSQL ETL pipeline for Windows targeting Receita Federal CNPJ open data.
 
 The project downloads public CNPJ datasets, prepares the raw files for import, loads them into PostgreSQL, applies configurable filters, enriches the result with supporting tables, and exports a filtered CSV for downstream analysis or sample workflows.
 
@@ -19,6 +19,12 @@ The project downloads public CNPJ datasets, prepares the raw files for import, l
 - Classifies existing client lists from `.xlsx` or `.csv` as `MEI`, `Simples Nacional`, `Normal`, `Sem CNPJ`, or `CNPJ invalido` using Receita's Simples dataset.
 - Builds PostgreSQL-ready sample client staging CSVs by combining a base client file, optional cleaned enrichment, optional Simples data, and optional government CNAE categories.
 - Includes tests for pipeline safety checks and script behavior.
+
+## Origin & Field Results
+
+Built as a PL/pgSQL + PowerShell ETL for Receita Federal CNPJ open datasets (`15 GB+`, `70M+` records). Pairing staged `UNLOGGED` load tables with parallel null-byte cleanup and batch ordering cut full-load runtime by `~60%` (`~4h` to `~1h30` in the original environment).
+
+> **Engineering caveat:** `UNLOGGED` staging tables trade crash durability during the load window for write throughput. An unclean PostgreSQL shutdown truncates unlogged staging tables and requires rerunning the import stage from cleaned `LIMPO_*` artifacts. Field timings are environment-dependent (CPU, disk IOPS, PostgreSQL configuration, and dataset volume).
 
 ## Pipeline Architecture
 
@@ -44,6 +50,8 @@ See `docs/ARCHITECTURE.md` for a short stage overview.
 - Enough disk space for Receita Federal CNPJ archives and extracted working files
 - Network access to the Receita Federal open data mirror configured in `config.ps1`
 
+If local script execution is restricted, configure a PowerShell execution policy suitable for your environment (for example, `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`) before running the commands below.
+
 ## Quick Start
 
 Clone the repository, then create your local config file:
@@ -65,7 +73,7 @@ $env:CNPJ_ETL_DB_PASSWORD = "your-password"
 Run the pipeline:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-pipeline.ps1
+powershell -NoProfile -File .\run-pipeline.ps1
 ```
 
 The pipeline prompts before importing into PostgreSQL and before generating the final CSV export.
@@ -105,7 +113,7 @@ The pipeline resolves database credentials from these environment variables:
 ## Running The Pipeline
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-pipeline.ps1
+powershell -NoProfile -File .\run-pipeline.ps1
 ```
 
 If `config.ps1` is missing, the pipeline exits with instructions to copy `config.example.ps1` first.
@@ -132,9 +140,9 @@ The client file must contain a `CNPJ` column by default. The script preserves th
 For official multi-GB Receita `SIMPLES.CSV` files, use the default PostgreSQL mode:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\classify-clientes.ps1 `
+powershell -NoProfile -File .\scripts\classify-clientes.ps1 `
   -InputPath .\clientes.xlsx `
-  -SimplesPath "C:\Receita\F.K03200W.SIMPLES.CSV" `
+  -SimplesPath 'C:\Receita\F.K03200$W.SIMPLES.CSV' `
   -OutputPath .\output\clientes_classificados.csv
 ```
 
@@ -143,7 +151,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\classify-clientes.ps1 `
 For samples, tests, or tiny Simples files, use file mode:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\classify-clientes.ps1 `
+powershell -NoProfile -File .\scripts\classify-clientes.ps1 `
   -InputPath .\examples\clientes.sample.csv `
   -SimplesPath .\examples\simples.sample.csv `
   -OutputPath .\output\clientes_classificados.csv `
@@ -167,10 +175,10 @@ See `docs/client-classifier.md` for detailed usage, PostgreSQL requirements, pac
 Use `scripts/build-client-staging.ps1` when you need a PostgreSQL-friendly CSV that keeps the base sample client spreadsheet as the row source and adds cleaned enrichment fields.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-client-staging.ps1 `
+powershell -NoProfile -File .\scripts\build-client-staging.ps1 `
   -InputPath .\data\clientes.xlsx `
   -EnrichmentPath .\data\operational-enrichment.csv `
-  -SimplesPath .\data\F.K03200$W.SIMPLES.CSV `
+  -SimplesPath '.\data\F.K03200$W.SIMPLES.CSV' `
   -OutputPath .\output\clientes_postgres_staging.csv `
   -IncludeGovernmentData
 ```
@@ -186,17 +194,17 @@ See `docs/client-staging.md` for the generated columns, review CSV, summary JSON
 To build the optional interactive Windows launcher:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\packaging\build-classifier-exe.ps1
+powershell -NoProfile -File .\scripts\packaging\build-classifier-exe.ps1
 ```
 
 Executable builds are not committed to this repository. Publish or distribute the generated launcher as a release ZIP together with `classify-clientes.ps1`, `build-client-staging.ps1`, `config.example.ps1`, and `lib\preflight.ps1`.
 
 ## XML Regime Auditor
 
-`scripts/audit-xml-regime.ps1` checks whether the latest XML invoices for each company match the expected tax regime (Simples Nacional, MEI, or Normal) using fiscal XML evidence — `<CRT>`, ICMS group structure, and NFS-e `opSimpNac` field.
+`scripts/audit-xml-regime.ps1` checks whether the latest XML invoices for each company match the expected tax regime (Simples Nacional, MEI, or Normal) using fiscal XML evidence: `<CRT>`, ICMS group structure, and NFS-e `opSimpNac` field.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\audit-xml-regime.ps1 `
+powershell -NoProfile -File .\scripts\audit-xml-regime.ps1 `
   -XmlRoot '\\your-server\XML' `
   -ExpectedCsvPath .\output\clientes_classificados.csv `
   -OutputPath .\output\xml-regime-audit.csv `
@@ -207,7 +215,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\audit-xml-regime.ps1 `
   -OnlyProblems
 ```
 
-Supported invoice types: NF-e, NFC-e (primary evidence via `<CRT>`), NFS-e (basic national layout via `opSimpNac`), CT-e (medium-confidence via ICMS group structure). MDF-e is excluded — it carries no direct regime evidence.
+Supported invoice types: NF-e, NFC-e (primary evidence via `<CRT>`), NFS-e (basic national layout via `opSimpNac`), CT-e (medium-confidence via ICMS group structure). MDF-e is excluded because it carries no direct regime evidence.
 
 When `xmlRoot` is set in `config.ps1` (or via the `CNPJ_XML_ROOT` environment variable), the classifier and staging builder automatically generate a `*.xml-divergencias-recentes.csv` file beside the main output after each run. This report includes only recent invoices (current and previous month by default) where the XML regime does not match the classification.
 
@@ -218,8 +226,12 @@ See `docs/xml-regime-auditor.md` for the full rule set, evidence hierarchy, outp
 Tests do not require a committed `config.ps1` and do not run the full ETL.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+powershell -NoProfile -File .\tests\run-tests.ps1
 ```
+
+## Legal & Data Protection (LGPD) Notice
+
+While Receita Federal CNPJ open datasets are public registry data, MEI (Microempreendedor Individual) records often correspond to natural persons and include personal names, residential or business addresses, and phone numbers. Under Brazil's General Data Protection Law (LGPD), operators must enforce purpose limitation, data minimization, and explicit exclusion filters (such as the pipeline's non-MEI filter excluding legal nature code `2135`) before any downstream analytical or CRM use.
 
 ## Data Safety
 
@@ -253,7 +265,7 @@ See `SECURITY.md` for the public release policy.
 
 ## Limitations
 
-- The project is Windows-first and tested with PowerShell.
+- Built as a PowerShell + PostgreSQL ETL pipeline for Windows.
 - Full ETL runs can require substantial disk space and database time.
 - Receita Federal dataset structure, filenames, and availability can change over time.
 - Filtering choices are configuration examples, not recommendations for a specific business use case.
